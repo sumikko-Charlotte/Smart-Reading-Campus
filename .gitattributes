@@ -1,0 +1,17 @@
+# 统一换行符：源码走 LF，Windows 脚本走 CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.db binary
+
+# 让 git diff 把 lock 文件当二进制，避免噪音
+package-lock.json -diff
