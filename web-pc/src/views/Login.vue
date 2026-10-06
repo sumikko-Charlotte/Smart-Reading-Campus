@@ -52,7 +52,7 @@ const rules = {
 const demoAccounts = [
   { no: 'T2009', label: '图书馆老师' },
   { no: 'admin', label: '系统管理员' },
-  { no: '2025211995', label: '学生（万贝）' }
+  { no: '2025211987', label: '学生（Alice）' }
 ]
 
 function fill(no) {

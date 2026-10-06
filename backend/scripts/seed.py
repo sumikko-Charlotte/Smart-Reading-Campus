@@ -3,8 +3,7 @@
 演示账号（密码统一 123456）：
 - admin      系统管理员   role=admin
 - T2009      施怀鹃       role=librarian
-- 2025211995 万贝         role=student
-- 2025212723 杨可馨       role=student
+- 2025211987 Alice        role=student
 """
 import os
 import sys
@@ -29,9 +28,7 @@ def iso(days: int, hour: int = 14) -> datetime:
 USERS = [
     dict(student_no="admin", name="系统管理员", role=UserRole.ADMIN.value, college="图书馆"),
     dict(student_no="T2009", name="施怀鹃", role=UserRole.LIBRARIAN.value, college="图书馆", email="shi2009@bupt.edu.cn"),
-    dict(student_no="2025211995", name="万贝", role=UserRole.STUDENT.value, college="人工智能学院", major="信息工程", class_no="2025219103"),
-    dict(student_no="2025212723", name="杨可馨", role=UserRole.STUDENT.value, college="未来学院", major="电子信息（元班）", class_no="2025217802"),
-    dict(student_no="2025211527", name="康馨戈", role=UserRole.STUDENT.value, college="计算机学院", major="计算机科学与技术", class_no="2025211311"),
+    dict(student_no="2025211987", name="Alice", role=UserRole.STUDENT.value),
 ]
 
 BOOKS = [
@@ -57,7 +54,7 @@ def main() -> None:
     try:
         if db.scalar(select(User).limit(1)) is None:
             for u in USERS:
-                db.add(User(**u, phone="17744813115" if u["name"] == "杨可馨" else ""))
+                db.add(User(**u))
             print(f"[seed] 用户 {len(USERS)} 条")
         else:
             print("[seed] 用户已存在，跳过")
