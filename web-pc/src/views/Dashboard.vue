@@ -19,7 +19,7 @@
     </el-row>
 
     <el-row :gutter="16" class="mt-16">
-      <el-col :md="14">
+      <el-col :md="24">
         <div class="card-block">
           <div class="flex-between">
             <h3 class="section-title">活动状态分布</h3>
@@ -37,17 +37,6 @@
         </div>
       </el-col>
 
-      <el-col :md="10">
-        <div class="card-block">
-          <h3 class="section-title">本轮（10.06 - 10.18）开发任务</h3>
-          <el-timeline class="mt-8">
-            <el-timeline-item v-for="t in roundTasks" :key="t.title" :type="t.type" :hollow="true">
-              <div class="task-title">{{ t.title }}</div>
-              <div class="text-muted task-owner">负责人：{{ t.owner }}　|　{{ t.status }}</div>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </el-col>
     </el-row>
 
     <div class="card-block mt-16">
@@ -90,15 +79,6 @@ const statusRows = computed(() => {
     return { ...s, type: typeOf(ACTIVITY_STATUS, s.value), count, percent: Math.round((count / total) * 100) }
   })
 })
-
-const roundTasks = [
-  { title: 'PC 端 Vue 基础框架 + 活动管理后台首版页面', owner: '万贝', status: '本轮进行中', type: 'primary' },
-  { title: 'AI 推荐 / AI 阅读助手 / 图书漂流页面骨架', owner: '万贝', status: '本轮进行中', type: 'primary' },
-  { title: 'FastAPI 基础工程 + 首版 API 接口定义', owner: '万贝', status: '已交付骨架', type: 'success' },
-  { title: '小程序基础项目 + 3 条核心页面链路', owner: '杨可馨', status: '对端开发中', type: 'info' },
-  { title: 'AI 阅读助手 MVP（1 本书 + 5-10 个测试问题）', owner: '杨可馨', status: '对端开发中', type: 'info' },
-  { title: '需求与功能说明、验收清单', owner: '康馨戈', status: '对端开发中', type: 'info' }
-]
 
 const quickEntries = [
   { path: '/activities', title: '活动管理', desc: '发起 / 招募 / 公示全流程', icon: 'Calendar' },
@@ -174,14 +154,6 @@ onMounted(loadAll)
   width: 42px;
   text-align: right;
   font-weight: 600;
-}
-
-.task-title {
-  font-size: 13px;
-}
-
-.task-owner {
-  font-size: 12px;
 }
 
 .quick-entries {
