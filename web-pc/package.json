@@ -1,0 +1,27 @@
+{
+  "name": "smart-reading-pc",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "智阅校园 · PC 端管理平台（第 1 轮骨架）",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.9",
+    "element-plus": "^2.9.1",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  },
+  "optionalDependencies": {
+    "@esbuild/win32-x64": "^0.25.12"
+  }
+}

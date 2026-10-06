@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    "Vue.volar",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "EditorConfig.EditorConfig",
+    "humao.rest-client",
+    "mikestead.dotenv"
+  ],
+  "unwantedRecommendations": ["octref.vetur"]
+}

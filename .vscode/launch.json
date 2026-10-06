@@ -1,0 +1,40 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "后端：FastAPI 调试 (uvicorn --reload)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"],
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "后端：当前文件 (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v"],
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "前端：Chrome 调试 (需先 npm run dev)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/web-pc/src",
+      "sourceMaps": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "★ 全栈调试（先手动启动前端 dev server）",
+      "configurations": ["后端：FastAPI 调试 (uvicorn --reload)"]
+    }
+  ]
+}

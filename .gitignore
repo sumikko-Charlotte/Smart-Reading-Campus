@@ -1,0 +1,27 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.db
+.env
+
+# ---------- Node ----------
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-error.log*
+
+# ---------- Editor / OS ----------
+.idea/
+.DS_Store
+Thumbs.db
+
+# VS Code：共享调试/任务/插件配置，其余忽略
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json

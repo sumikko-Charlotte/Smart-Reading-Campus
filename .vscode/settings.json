@@ -1,0 +1,44 @@
+{
+  // ---------- Python 后端 ----------
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
+  "python.analysis.typeCheckingMode": "basic",
+
+  // ---------- 编辑器通用 ----------
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.formatOnSave": false,
+  "files.eol": "\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "editor.rulers": [100],
+
+  // ---------- 按语言区分缩进 ----------
+  "[python]": { "editor.tabSize": 4 },
+  "[markdown]": { "editor.tabSize": 2 },
+  "[vue]": { "editor.tabSize": 2 },
+
+  // ---------- Vue / 前端 ----------
+  "emmet.includeLanguages": { "vue-html": "html", "vue": "html" },
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "vue.server.hybridMode": true,
+
+  // ---------- 隐藏噪音文件 ----------
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/.vite": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/.venv": true,
+    "**/package-lock.json": true
+  },
+  "files.associations": {
+    "*.env.development": "dotenv",
+    "*.env.example": "dotenv"
+  }
+}
