@@ -74,6 +74,33 @@ def test_smoke() -> None:
     bad = client.post(f"/api/v1/activities/{aid}/status", headers=headers, json={"target_status": "finished"}).json()
     assert bad["code"] == 1005, bad
 
+    # 5.1 POST /publish：不带请求体与带空对象都应可用（规范 7.5）
+    draft_plain = client.post(
+        "/api/v1/activities",
+        headers=headers,
+        json={"title": "冒烟测试-发布用草稿", "category": "other", "start_at": "2026-11-05T14:00:00+08:00"},
+    ).json()
+    plain_id = draft_plain["data"]["activity_id"]
+    pub = client.post(f"/api/v1/activities/{plain_id}/publish", headers=headers)
+    assert pub.status_code == 200 and pub.json()["data"]["status"] == "published", pub.json()
+    assert pub.json()["data"]["published_at"], pub.json()
+    pub_repeat = client.post(f"/api/v1/activities/{plain_id}/publish", headers=headers, json={})
+    assert pub_repeat.status_code == 409 and pub_repeat.json()["code"] == 1005, pub_repeat.json()
+
+    # 5.2 需要证书但未指定模板 → 发布被拒（规范 7.2 第 2 条）
+    cert_draft = client.post(
+        "/api/v1/activities",
+        headers=headers,
+        json={
+            "title": "冒烟测试-缺证书模板",
+            "category": "lecture",
+            "start_at": "2026-11-06T14:00:00+08:00",
+            "need_certificate": True,
+        },
+    ).json()
+    cert_pub = client.post(f"/api/v1/activities/{cert_draft['data']['activity_id']}/publish", headers=headers)
+    assert cert_pub.status_code == 422 and cert_pub.json()["code"] == 1001, cert_pub.json()
+
     good = client.post(f"/api/v1/activities/{aid}/status", headers=headers, json={"target_status": "published"}).json()
     assert good["code"] == 0 and good["data"]["status"] == "published", good
 

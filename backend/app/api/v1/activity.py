@@ -186,7 +186,7 @@ def update_activity(
 @router.post("/{activity_id}/publish", summary="发布活动", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
 def publish_activity(
     activity_id: str,
-    payload: EmptyPayload,
+    payload: EmptyPayload | None = None,
     current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

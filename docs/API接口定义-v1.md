@@ -171,7 +171,7 @@
 
 ### POST /activities/{activity_id}/publish
 
-请求 `{}`。仅草稿可发布；服务端校验报名开始/截止时间、活动开始/结束时间后写入 `published_at`。
+请求体可传 `{}` 或直接省略。仅草稿可发布；服务端校验报名开始/截止时间、活动开始/结束时间，并在需要证书时校验 `certificate_template_id` 非空，通过后写入 `published_at`。非草稿重复发布返回 HTTP 409 / `code=1005`。
 
 ### POST /activities/{activity_id}/status — 状态机流转
 
