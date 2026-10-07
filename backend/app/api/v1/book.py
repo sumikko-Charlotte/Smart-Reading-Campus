@@ -50,7 +50,9 @@ def list_books(
         stmt = stmt.where(Book.source == source)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    order_col = getattr(Book, pq.order_by, Book.updated_at)
+    if pq.order_by not in {"title", "created_at", "updated_at", "publish_date", "borrow_count"}:
+        raise BizError(1001, "order_by 不合法")
+    order_col = getattr(Book, pq.order_by)
     stmt = stmt.order_by(order_col.desc() if pq.order == "desc" else order_col.asc())
     rows = db.scalars(stmt.offset((pq.page - 1) * pq.page_size).limit(pq.page_size)).all()
     return ok(page_result([BookOut.model_validate(r).model_dump() for r in rows], pq.page, pq.page_size, total))
@@ -65,11 +67,13 @@ def get_by_isbn(isbn: str, db: Session = Depends(get_db)):
     return ok(BookOut.model_validate(row).model_dump())
 
 
-@router.post("", summary="录入图书（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.post("", status_code=201, summary="录入图书（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
 def create_book(payload: BookCreate, db: Session = Depends(get_db)):
-    if db.scalar(select(Book).where(Book.isbn == payload.isbn)):
+    if payload.isbn and db.scalar(select(Book).where(Book.isbn == payload.isbn, Book.is_deleted.is_(False))):
         raise BizError(1001, "该 ISBN 已存在")
-    row = Book(**payload.model_dump())
+    if payload.available_copies > payload.total_copies:
+        raise BizError(1001, "可借册数不能超过馆藏总册数")
+    row = Book(**payload.model_dump(), source=BookSource.LIBRARY.value)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -84,8 +88,22 @@ def get_book(book_id: str, db: Session = Depends(get_db)):
 @router.patch("/{book_id}", summary="更新图书（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
 def update_book(book_id: str, payload: BookUpdate, db: Session = Depends(get_db)):
     row = _get_or_404(db, book_id)
-    for k, v in payload.model_dump(exclude_none=True).items():
-        setattr(row, k, v)
+    updates = payload.model_dump(exclude_unset=True)
+    next_total = updates.get("total_copies", row.total_copies)
+    next_available = updates.get("available_copies", row.available_copies)
+    if next_total is not None and next_available is not None and next_available > next_total:
+        raise BizError(1001, "可借册数不能超过馆藏总册数")
+    for key, value in updates.items():
+        if key in {"title", "author", "publisher", "category"} and value is None:
+            raise BizError(1001, f"{key} 不允许为 null")
+        if key == "publish_date" and value is not None:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError as exc:
+                raise BizError(1001, "publish_date 必须为 YYYY-MM-DD") from exc
+        if value is None and key in {"subtitle", "translator", "publisher", "category", "language", "cover_url", "summary"}:
+            value = ""
+        setattr(row, key, value)
     db.commit()
     db.refresh(row)
     return ok(BookOut.model_validate(row).model_dump())
@@ -148,7 +166,7 @@ def recommend_books(payload: RecommendRequest, current: CurrentUser = Depends(ge
         for i, b in enumerate(rows)
     ]
     conv = AIConversation(
-        user_id=payload.user_id or current.user_id,
+        user_id=current.user_id,
         scene="recommend",
         title="AI 智能推荐",
         book_id=None,

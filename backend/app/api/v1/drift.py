@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -13,16 +13,22 @@ from app.core.security import CurrentUser, get_current_user, new_id
 from app.db.base import get_db
 from app.db.models import Book, DriftRecord, User
 from app.schemas.book import BookOut
-from app.schemas.common import PageQuery
+from app.schemas.common import PageQuery, RequestModel
 
 router = APIRouter(prefix="/drift", tags=["图书漂流"])
 
 
-class DriftOnShelfRequest(BaseModel):
-    isbn: str = Field(description="扫码得到的 ISBN")
-    owner_id: str = Field(default="", description="上架人，不传取当前用户")
+class DriftOnShelfRequest(RequestModel):
+    isbn: str = Field(default="", description="扫码得到的 ISBN；无 ISBN 时可手动补录书目")
     location: str = Field(default="", description="线下交接地点，如「图书馆一层大厅」")
-    note: str = Field(default="", description="图书成色/备注")
+    title: str = Field(default="", description="无 ISBN 时必填")
+    author: str = ""
+
+    @model_validator(mode="after")
+    def require_title_without_isbn(self):
+        if not self.isbn and not self.title.strip():
+            raise ValueError("无 ISBN 时必须填写书名")
+        return self
 
 
 @router.get("/books", summary="漂流池列表")
@@ -31,55 +37,63 @@ def list_drift_books(
     drift_status: str = Query(default="", description="idle/reserved/in_transit/claimed/closed"),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Book).where(Book.is_deleted.is_(False), Book.source == BookSource.DRIFT.value)
+    stmt = select(DriftRecord, Book).join(Book, Book.book_id == DriftRecord.book_id).where(
+        Book.is_deleted.is_(False), DriftRecord.is_deleted.is_(False)
+    )
     if pq.keyword:
         like = f"%{pq.keyword}%"
         stmt = stmt.where(or_(Book.title.like(like), Book.author.like(like), Book.isbn.like(like)))
     if drift_status:
-        stmt = stmt.where(Book.drift_status == drift_status)
+        stmt = stmt.where(DriftRecord.drift_status == drift_status)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = db.scalars(
-        stmt.order_by(Book.updated_at.desc()).offset((pq.page - 1) * pq.page_size).limit(pq.page_size)
+    rows = db.execute(
+        stmt.order_by(DriftRecord.updated_at.desc()).offset((pq.page - 1) * pq.page_size).limit(pq.page_size)
     ).all()
-    return ok(page_result([BookOut.model_validate(r).model_dump() for r in rows], pq.page, pq.page_size, total))
+    items = [_drift_book_out(record, book) for record, book in rows]
+    return ok(page_result(items, pq.page, pq.page_size, total))
+
+
+def _drift_book_out(record: DriftRecord, book: Book) -> dict:
+    return {
+        **BookOut.model_validate(book).model_dump(),
+        "drift_id": record.drift_id,
+        "drift_status": record.drift_status,
+        "current_holder_id": record.current_holder_id,
+        "drift_location": record.drift_location,
+        "drift_count": record.drift_count,
+    }
 
 
 @router.post("/books", summary="扫码上架一本漂流书")
 def put_on_shelf(payload: DriftOnShelfRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     isbn = payload.isbn.replace("-", "").strip()
-    owner_id = payload.owner_id or current.user_id
+    owner_id = current.user_id
 
-    book = db.scalar(select(Book).where(Book.isbn == isbn, Book.is_deleted.is_(False)))
+    book = db.scalar(select(Book).where(Book.isbn == isbn, Book.is_deleted.is_(False))) if isbn else None
     if book is None:
         # 新书：先建档再上架
         book = Book(
             isbn=isbn,
-            title=f"待补充书名（{isbn}）",
-            author="",
+            title=payload.title.strip() or f"待补充书名（{isbn}）",
+            author=payload.author,
             source=BookSource.DRIFT.value,
-            total_copies=1,
-            available_copies=1,
+            total_copies=0,
+            available_copies=0,
             tags=[],
             ai_tags=[],
         )
         db.add(book)
         db.flush()
     else:
-        book.source = BookSource.DRIFT.value
-
-    book.drift_status = DriftStatus.IDLE.value
-    book.current_holder_id = owner_id
-    book.drift_location = payload.location
-    book.drift_count = (book.drift_count or 0)
+        book.source = BookSource.BOTH.value if book.total_copies > 0 else BookSource.DRIFT.value
 
     record = DriftRecord(
         drift_id=new_id("drift"),
         book_id=book.book_id,
-        holder_id=owner_id,
-        from_user_id="",
-        status=DriftStatus.IDLE.value,
-        location=payload.location,
+        current_holder_id=owner_id,
+        drift_status=DriftStatus.IDLE.value,
+        drift_location=payload.location,
     )
     db.add(record)
     db.commit()
@@ -87,38 +101,32 @@ def put_on_shelf(payload: DriftOnShelfRequest, current: CurrentUser = Depends(ge
     return ok({"book": BookOut.model_validate(book).model_dump(), "drift_id": record.drift_id})
 
 
-@router.post("/books/{book_id}/claim", summary="申领漂流书（生成交接记录）")
-def claim(book_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    book = db.get(Book, book_id)
+@router.post("/records/{drift_id}/claim", summary="申领单册漂流书")
+def claim(drift_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = db.get(DriftRecord, drift_id)
+    if record is None or record.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "漂流记录不存在")
+    book = db.get(Book, record.book_id)
     if book is None or book.is_deleted:
         raise BizError(CODE_NOT_FOUND, "漂流书不存在")
-    if book.drift_status not in (DriftStatus.IDLE.value, DriftStatus.RESERVED.value):
+    if record.drift_status not in (DriftStatus.IDLE.value, DriftStatus.RESERVED.value):
         raise BizError(CODE_ILLEGAL_STATE, "该书当前状态不可申领")
-    if book.current_holder_id == current.user_id:
+    if record.current_holder_id == current.user_id:
         raise BizError(CODE_ILLEGAL_STATE, "不能申领自己上架的图书")
 
-    prev_holder = book.current_holder_id
-    book.current_holder_id = current.user_id
-    book.drift_status = DriftStatus.CLAIMED.value
-    book.drift_count = (book.drift_count or 0) + 1
-
     holder = db.get(User, current.user_id)
-    record = DriftRecord(
-        drift_id=new_id("drift"),
-        book_id=book.book_id,
-        holder_id=current.user_id,
-        from_user_id=prev_holder,
-        status=DriftStatus.CLAIMED.value,
-        location=book.drift_location,
-        claimed_at=datetime.now(timezone.utc),
-    )
-    db.add(record)
+    record.current_holder_id = current.user_id
+    record.drift_status = DriftStatus.CLAIMED.value
+    record.drift_count += 1
     db.commit()
-    db.refresh(book)
+    db.refresh(record)
     return ok(
         {
             "book": BookOut.model_validate(book).model_dump(),
             "drift_id": record.drift_id,
+            "drift_status": record.drift_status,
+            "current_holder_id": record.current_holder_id,
+            "drift_count": record.drift_count,
             "holder_name": holder.name if holder else "",
         }
     )
@@ -141,11 +149,10 @@ def list_records(
         {
             "drift_id": r.drift_id,
             "book_id": r.book_id,
-            "holder_id": r.holder_id,
-            "from_user_id": r.from_user_id,
-            "status": r.status,
-            "location": r.location,
-            "claimed_at": r.claimed_at,
+            "drift_status": r.drift_status,
+            "current_holder_id": r.current_holder_id,
+            "drift_location": r.drift_location,
+            "drift_count": r.drift_count,
             "created_at": r.created_at,
         }
         for r in rows
@@ -155,10 +162,10 @@ def list_records(
 
 @router.get("/stats", summary="漂流数据概览（PC 端管理视图卡片）")
 def drift_stats(db: Session = Depends(get_db)):
-    base = select(func.count()).select_from(Book).where(Book.is_deleted.is_(False), Book.source == BookSource.DRIFT.value)
+    base = select(func.count()).select_from(DriftRecord).where(DriftRecord.is_deleted.is_(False))
     return ok(
         {
             "total": db.scalar(base) or 0,
-            "by_status": {s.value: db.scalar(base.where(Book.drift_status == s.value)) or 0 for s in DriftStatus},
+            "by_status": {s.value: db.scalar(base.where(DriftRecord.drift_status == s.value)) or 0 for s in DriftStatus},
         }
     )

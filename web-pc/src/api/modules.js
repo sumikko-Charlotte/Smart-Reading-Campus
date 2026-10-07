@@ -40,6 +40,7 @@ export function chatStream(data, { onDelta, onDone, onError } = {}) {
       const reader = resp.body.getReader()
       const decoder = new TextDecoder('utf-8')
       let buffer = ''
+      let finished = false
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
@@ -50,17 +51,27 @@ export function chatStream(data, { onDelta, onDone, onError } = {}) {
           const line = frame.trim()
           if (!line.startsWith('data:')) continue
           const payloadText = line.slice(5).trim()
-          if (payloadText === '[DONE]') return onDone?.()
+          if (payloadText === '[DONE]') {
+            if (!finished) onError?.(new Error('回答未完整接收，请重试'))
+            return
+          }
           try {
             const payload = JSON.parse(payloadText)
-            if (payload.finished) onDone?.(payload)
+            if (payload.error) {
+              onError?.(new Error(payload.message || '流式请求失败'))
+              return
+            }
+            if (payload.finished) {
+              finished = true
+              onDone?.(payload)
+            }
             else onDelta?.(payload.delta, payload)
           } catch (err) {
             // 忽略无法解析的单帧，避免整条流中断
           }
         }
       }
-      onDone?.()
+      if (!finished) onError?.(new Error('回答未完整接收，请重试'))
     })
     .catch((err) => {
       if (err.name !== 'AbortError') onError?.(err)
@@ -74,4 +85,4 @@ export const listDriftBooks = (params) => request.get('/drift/books', { params }
 export const listDriftRecords = (params) => request.get('/drift/records', { params })
 export const driftStats = () => request.get('/drift/stats')
 export const putBookOnShelf = (data) => request.post('/drift/books', data)
-export const claimDriftBook = (bookId) => request.post(`/drift/books/${bookId}/claim`)
+export const claimDriftBook = (driftId) => request.post(`/drift/records/${driftId}/claim`)

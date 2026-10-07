@@ -168,13 +168,15 @@ async function onSend() {
       streaming.value = true
       streamBuffer.value = ''
       controller = chatStream(
-        { conversation_id: conversationId.value, message: text, scene: 'qa', book_id: bookId.value || null },
+        { conversation_id: conversationId.value || null, content: text, scene: 'qa', book_id: bookId.value || null },
         {
-          onDelta: (delta) => {
+          onDelta: (delta, frame) => {
+            if (frame?.conversation_id) conversationId.value = frame.conversation_id
             streamBuffer.value += delta
             scrollToBottom()
           },
-          onDone: async () => {
+          onDone: async (frame) => {
+            if (frame?.conversation_id) conversationId.value = frame.conversation_id
             messages.value.push({ message_id: `local_${Date.now()}`, role: 'assistant', content: streamBuffer.value, tokens: 0, created_at: new Date().toISOString() })
             streamBuffer.value = ''
             streaming.value = false
@@ -183,14 +185,21 @@ async function onSend() {
           },
           onError: (err) => {
             streaming.value = false
+            streamBuffer.value = ''
             ElMessage.error(err?.message || '流式请求失败')
           }
         }
       )
     } else {
-      const data = await chat({ conversation_id: conversationId.value, message: text, scene: 'qa', book_id: bookId.value || null })
+      const data = await chat({ conversation_id: conversationId.value || null, content: text, scene: 'qa', book_id: bookId.value || null })
       conversationId.value = data.conversation_id
-      messages.value.push(data.message)
+      messages.value.push({
+        message_id: data.message_id,
+        role: 'assistant',
+        content: data.content,
+        tokens: 0,
+        created_at: new Date().toISOString()
+      })
       await fetchConversations()
       scrollToBottom()
     }

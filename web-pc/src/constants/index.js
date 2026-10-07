@@ -5,7 +5,7 @@
 
 export const ACTIVITY_STATUS = [
   { value: 'draft', label: '草稿', type: 'info' },
-  { value: 'published', label: '报名中', type: 'success' },
+  { value: 'published', label: '已发布', type: 'success' },
   { value: 'signup_closed', label: '报名截止', type: 'warning' },
   { value: 'ongoing', label: '进行中', type: 'primary' },
   { value: 'finished', label: '已结束', type: 'info' },
@@ -15,8 +15,8 @@ export const ACTIVITY_STATUS = [
 // 状态机的前端镜像：仅用于按钮可用性提示，真正校验在后端
 export const ACTIVITY_STATUS_FLOW = {
   draft: ['published', 'cancelled'],
-  published: ['signup_closed', 'ongoing', 'cancelled'],
-  signup_closed: ['ongoing', 'finished', 'cancelled'],
+  published: ['signup_closed', 'cancelled'],
+  signup_closed: ['ongoing', 'cancelled'],
   ongoing: ['finished'],
   finished: [],
   cancelled: []
@@ -33,7 +33,8 @@ export const ACTIVITY_CATEGORY = [
 
 export const BOOK_SOURCE = [
   { value: 'library', label: '馆藏图书' },
-  { value: 'drift', label: '漂流图书' }
+  { value: 'drift', label: '漂流图书' },
+  { value: 'both', label: '馆藏及漂流' }
 ]
 
 export const DRIFT_STATUS = [

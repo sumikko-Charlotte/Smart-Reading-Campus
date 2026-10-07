@@ -189,7 +189,7 @@ async function onStatusCommand(row, target) {
       }
     )
     const data = await changeActivityStatus(row.activity_id, target, value || '')
-    ElMessage.success(`已流转为「${data.status_label}」`)
+    ElMessage.success(`已流转为「${labelOf(ACTIVITY_STATUS, data.status)}」`)
     fetchList()
   } catch (err) {
     if (err !== 'cancel') {

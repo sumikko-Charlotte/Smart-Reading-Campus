@@ -52,10 +52,16 @@ class PageData(BaseModel, Generic[T]):
 class BizError(Exception):
     """业务异常：抛出后由统一异常处理器包装成标准响应。"""
 
-    def __init__(self, code: int, message: str, http_status: int = status.HTTP_200_OK):
+    def __init__(self, code: int, message: str, http_status: int | None = None):
         self.code = code
         self.message = message
-        self.http_status = http_status
+        self.http_status = http_status or {
+            CODE_PARAM_ERROR: status.HTTP_422_UNPROCESSABLE_ENTITY,
+            CODE_UNAUTHORIZED: status.HTTP_401_UNAUTHORIZED,
+            CODE_FORBIDDEN: status.HTTP_403_FORBIDDEN,
+            CODE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+            CODE_ILLEGAL_STATE: status.HTTP_409_CONFLICT,
+        }.get(code, status.HTTP_200_OK)
         super().__init__(message)
 
 
@@ -81,7 +87,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         loc = ".".join(str(x) for x in first.get("loc", []) if x != "body")
         msg = f"参数校验失败：{loc} {first.get('msg', '')}".strip()
         return JSONResponse(
-            status_code=status.HTTP_200_OK,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"code": CODE_PARAM_ERROR, "message": msg, "data": None, "trace_id": new_trace_id()},
         )
 
@@ -97,5 +103,5 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _unhandled(_: Request, exc: Exception):
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"code": CODE_SERVER_ERROR, "message": f"服务器内部错误：{exc}", "data": None, "trace_id": new_trace_id()},
+            content={"code": CODE_SERVER_ERROR, "message": "服务器内部错误", "data": None, "trace_id": new_trace_id()},
         )

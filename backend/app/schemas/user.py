@@ -1,12 +1,13 @@
 """User 相关 Schema。"""
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.common import ORMModel
+from app.schemas.common import ORMModel, RequestModel
 
 
-class UserBase(BaseModel):
+class UserBase(RequestModel):
     name: str = Field(min_length=1, max_length=64)
     college: str = ""
     major: str = ""
@@ -19,10 +20,10 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     student_no: str = Field(min_length=3, max_length=32, description="学号/工号，登录账号")
-    role: str = Field(default="student", description="student / librarian / admin")
+    role: Literal["student", "librarian", "admin"] = "student"
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(RequestModel):
     name: str | None = None
     college: str | None = None
     major: str | None = None
@@ -31,7 +32,7 @@ class UserUpdate(BaseModel):
     phone: str | None = None
     email: str | None = None
     avatar_url: str | None = None
-    status: str | None = Field(default=None, description="active / disabled")
+    status: Literal["active", "disabled"] | None = None
 
 
 class UserOut(ORMModel, UserBase):
@@ -44,12 +45,12 @@ class UserOut(ORMModel, UserBase):
     updated_at: datetime
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(RequestModel):
     student_no: str = Field(description="学号/工号")
     password: str = Field(default="", description="本轮为占位校验，演示密码 123456")
 
 
-class LoginResponse(BaseModel):
+class LoginResponse(RequestModel):
     token: str
     token_type: str = "Bearer"
     expires_in: int = Field(description="有效期（秒）")

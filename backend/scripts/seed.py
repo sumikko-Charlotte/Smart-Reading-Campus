@@ -2,7 +2,7 @@
 
 演示账号（密码统一 123456）：
 - admin      系统管理员   role=admin
-- T2009      施怀鹃       role=librarian
+- T2009      图书馆老师   role=librarian
 - 2025211987 Alice        role=student
 """
 import os
@@ -15,19 +15,19 @@ from sqlalchemy import select  # noqa: E402
 
 from app.core.enums import ActivityCategory, ActivityStatus, BookSource, DriftStatus, UserRole  # noqa: E402
 from app.db.base import SessionLocal, init_db  # noqa: E402
-from app.db.models import Activity, Book, User  # noqa: E402
+from app.db.models import Activity, Book, DriftRecord, User  # noqa: E402
 
 CST = timezone(timedelta(hours=8))
 
 
 def iso(days: int, hour: int = 14) -> datetime:
     base = datetime.now(CST).replace(hour=hour, minute=0, second=0, microsecond=0)
-    return base + timedelta(days=days)
+    return (base + timedelta(days=days)).astimezone(timezone.utc)
 
 
 USERS = [
     dict(student_no="admin", name="系统管理员", role=UserRole.ADMIN.value, college="图书馆"),
-    dict(student_no="T2009", name="施怀鹃", role=UserRole.LIBRARIAN.value, college="图书馆", email="shi2009@bupt.edu.cn"),
+    dict(student_no="T2009", name="图书馆老师", role=UserRole.LIBRARIAN.value, college="图书馆"),
     dict(student_no="2025211987", name="Alice", role=UserRole.STUDENT.value),
 ]
 
@@ -37,7 +37,7 @@ BOOKS = [
     dict(isbn="9787020002207", title="红楼梦", author="曹雪芹", publisher="人民文学出版社", category="I242", tags=["古典文学", "名著"], borrow_count=74, total_copies=10, available_copies=6),
     dict(isbn="9787508647357", title="人类简史", author="尤瓦尔·赫拉利", publisher="中信出版社", category="K02", tags=["历史", "文明"], borrow_count=158, total_copies=6, available_copies=1),
     dict(isbn="9787544253994", title="百年孤独", author="加西亚·马尔克斯", publisher="南海出版公司", category="I775", tags=["拉美文学", "魔幻现实主义"], borrow_count=97, total_copies=4, available_copies=2),
-    dict(isbn="9787111636663", title="Vue.js 设计与实现", author="霍春阳", publisher="机械工业出版社", category="TP393", tags=["前端", "Vue"], borrow_count=45, total_copies=3, available_copies=3),
+    dict(isbn="9787111636663", title="Vue.js 设计与实现", author="霍春阳", publisher="机械工业出版社", category="TP393", tags=["前端", "Vue"], borrow_count=45, total_copies=0, available_copies=0),
 ]
 
 ACTIVITIES = [
@@ -59,15 +59,21 @@ def main() -> None:
         else:
             print("[seed] 用户已存在，跳过")
 
+        librarian = db.scalar(select(User).where(User.student_no == "T2009"))
+        if librarian is not None:
+            librarian.name = "图书馆老师"
+            librarian.email = ""
+            librarian.phone = ""
+
         if db.scalar(select(Book).limit(1)) is None:
             for idx, b in enumerate(BOOKS):
                 source = BookSource.DRIFT.value if idx == 5 else BookSource.LIBRARY.value
-                db.add(Book(**b, source=source, drift_status=DriftStatus.IDLE.value if source == BookSource.DRIFT.value else DriftStatus.CLOSED.value))
+                db.add(Book(**b, source=source))
             print(f"[seed] 图书 {len(BOOKS)} 条")
         else:
             print("[seed] 图书已存在，跳过")
 
-        organizer = db.scalar(select(User).where(User.name == "施怀鹃"))
+        organizer = db.scalar(select(User).where(User.student_no == "T2009"))
         if db.scalar(select(Activity).limit(1)) is None:
             for a in ACTIVITIES:
                 start_off = a.pop("start_offset")
@@ -87,6 +93,20 @@ def main() -> None:
             print(f"[seed] 活动 {len(ACTIVITIES)} 条")
         else:
             print("[seed] 活动已存在，跳过")
+
+        drift_book = db.scalar(select(Book).where(Book.isbn == "9787111636663"))
+        if drift_book is not None and db.scalar(select(DriftRecord).where(DriftRecord.book_id == drift_book.book_id)) is None:
+            db.add(
+                DriftRecord(
+                    book_id=drift_book.book_id,
+                    current_holder_id=librarian.user_id if librarian else None,
+                    drift_status=DriftStatus.IDLE.value,
+                    drift_location="图书馆一层大厅",
+                )
+            )
+        if librarian is not None:
+            for activity in db.scalars(select(Activity).where(Activity.organizer_id == librarian.user_id)).all():
+                activity.organizer_name = "图书馆老师"
 
         db.commit()
         print("[seed] 完成 ✅")

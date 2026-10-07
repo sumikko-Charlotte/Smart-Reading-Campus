@@ -39,8 +39,8 @@ class ActivityStatus(StrEnum):
 # 活动状态合法流转表：非法流转统一返回 code=1005
 ACTIVITY_STATUS_TRANSITIONS: dict[str, set[str]] = {
     ActivityStatus.DRAFT: {ActivityStatus.PUBLISHED, ActivityStatus.CANCELLED},
-    ActivityStatus.PUBLISHED: {ActivityStatus.SIGNUP_CLOSED, ActivityStatus.ONGOING, ActivityStatus.CANCELLED},
-    ActivityStatus.SIGNUP_CLOSED: {ActivityStatus.ONGOING, ActivityStatus.FINISHED, ActivityStatus.CANCELLED},
+    ActivityStatus.PUBLISHED: {ActivityStatus.SIGNUP_CLOSED, ActivityStatus.CANCELLED},
+    ActivityStatus.SIGNUP_CLOSED: {ActivityStatus.ONGOING, ActivityStatus.CANCELLED},
     ActivityStatus.ONGOING: {ActivityStatus.FINISHED},
     ActivityStatus.FINISHED: set(),
     ActivityStatus.CANCELLED: set(),
@@ -48,7 +48,7 @@ ACTIVITY_STATUS_TRANSITIONS: dict[str, set[str]] = {
 
 ACTIVITY_STATUS_LABELS: dict[str, str] = {
     ActivityStatus.DRAFT: "草稿",
-    ActivityStatus.PUBLISHED: "报名中",
+    ActivityStatus.PUBLISHED: "已发布",
     ActivityStatus.SIGNUP_CLOSED: "报名截止",
     ActivityStatus.ONGOING: "进行中",
     ActivityStatus.FINISHED: "已结束",
@@ -59,6 +59,7 @@ ACTIVITY_STATUS_LABELS: dict[str, str] = {
 class BookSource(StrEnum):
     LIBRARY = "library"
     DRIFT = "drift"
+    BOTH = "both"
 
 
 class DriftStatus(StrEnum):

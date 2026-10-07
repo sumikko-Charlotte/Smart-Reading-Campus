@@ -39,13 +39,13 @@ def chat(payload: ChatRequest, current: CurrentUser = Depends(get_current_user),
         conv = AIConversation(
             user_id=current.user_id,
             scene=payload.scene,
-            title=payload.message[:20],
+            title=payload.content[:20],
             book_id=payload.book_id,
             book_title=book.title if book else "",
-            model=payload.model or llm_service.settings.LLM_MODEL,
+            model=llm_service.settings.LLM_MODEL,
             messages=[],
             message_count=0,
-            prompt_version=payload.prompt_version or llm_service.settings.PROMPT_VERSION,
+            prompt_version=llm_service.settings.PROMPT_VERSION,
         )
         db.add(conv)
         db.flush()
@@ -53,11 +53,11 @@ def chat(payload: ChatRequest, current: CurrentUser = Depends(get_current_user),
     user_msg = {
         "message_id": new_id("message"),
         "role": MessageRole.USER.value,
-        "content": payload.message,
+        "content": payload.content,
         "tokens": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    answer, tokens = llm_service.chat_reply(conv.scene, payload.message, book)
+    answer, tokens = llm_service.chat_reply(conv.scene, payload.content, book)
     assistant_msg = {
         "message_id": new_id("message"),
         "role": MessageRole.ASSISTANT.value,
@@ -82,9 +82,8 @@ def chat(payload: ChatRequest, current: CurrentUser = Depends(get_current_user),
     return ok(
         ChatResponse(
             conversation_id=conv.conversation_id,
-            message=ChatMessage(**assistant_msg),
-            model=conv.model,
-            prompt_version=conv.prompt_version,
+            message_id=assistant_msg["message_id"],
+            content=assistant_msg["content"],
         ).model_dump()
     )
 

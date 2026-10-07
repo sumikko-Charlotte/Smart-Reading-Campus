@@ -1,12 +1,24 @@
 """Pydantic Schema：接口层数据契约（与 docs/核心数据对象与统一字段规范.md 一一对应）。"""
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+
+class RequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("*", check_fields=False)
+    def serialize_datetime(self, value):
+        if not isinstance(value, datetime):
+            return value
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone(timedelta(hours=8))).isoformat()
 
 
 class PageQuery(BaseModel):

@@ -23,7 +23,8 @@ ID_PREFIXES = {
     "conversation": "cnv",
     "message": "msg",
     "drift": "drf",
-    "signup": "sup",
+    "signup": "sgn",
+    "report": "rpt",
 }
 
 

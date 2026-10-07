@@ -4,7 +4,7 @@
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import (
@@ -83,32 +83,25 @@ class Book(Base, TimestampMixin):
     __tablename__ = "books"
 
     book_id: Mapped[str] = _id("book")
-    isbn: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    isbn: Mapped[str] = mapped_column(String(20), default="", index=True)
     title: Mapped[str] = mapped_column(String(128), index=True)
     subtitle: Mapped[str] = mapped_column(String(128), default="")
     author: Mapped[str] = mapped_column(String(128), default="")
     translator: Mapped[str] = mapped_column(String(64), default="")
     publisher: Mapped[str] = mapped_column(String(128), default="")
-    publish_date: Mapped[str] = mapped_column(String(16), default="")
+    publish_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
     category: Mapped[str] = mapped_column(String(64), default="")
     language: Mapped[str] = mapped_column(String(16), default="zh-CN")
     cover_url: Mapped[str] = mapped_column(String(255), default="")
     summary: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(16), default=BookSource.LIBRARY.value, index=True)
-    total_copies: Mapped[int] = mapped_column(Integer, default=1)
-    available_copies: Mapped[int] = mapped_column(Integer, default=1)
+    total_copies: Mapped[int] = mapped_column(Integer, default=0)
+    available_copies: Mapped[int] = mapped_column(Integer, default=0)
     borrow_count: Mapped[int] = mapped_column(Integer, default=0)
     ai_summary: Mapped[str] = mapped_column(Text, default="")
     ai_tags: Mapped[list] = mapped_column(JSON, default=list)
     ai_summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # ---- 图书漂流扩展（source = drift 时有值）----
-    drift_status: Mapped[str] = mapped_column(String(16), default=DriftStatus.IDLE.value)
-    current_holder_id: Mapped[str] = mapped_column(String(24), default="")
-    drift_location: Mapped[str] = mapped_column(String(128), default="")
-    drift_count: Mapped[int] = mapped_column(Integer, default=0)
-
 
 class AIConversation(Base, TimestampMixin):
     __tablename__ = "ai_conversations"
@@ -133,6 +126,7 @@ class ActivitySignup(Base, TimestampMixin):
     """活动报名与签到记录。"""
 
     __tablename__ = "activity_signups"
+    __table_args__ = (UniqueConstraint("activity_id", "user_id", name="uq_activity_signup_user"),)
 
     signup_id: Mapped[str] = _id("signup")
     activity_id: Mapped[str] = mapped_column(String(24), index=True)
@@ -150,8 +144,7 @@ class DriftRecord(Base, TimestampMixin):
 
     drift_id: Mapped[str] = _id("drift")
     book_id: Mapped[str] = mapped_column(String(24), index=True)
-    holder_id: Mapped[str] = mapped_column(String(24), index=True)
-    from_user_id: Mapped[str] = mapped_column(String(24), default="")
-    status: Mapped[str] = mapped_column(String(16), default=DriftStatus.IDLE.value)
-    location: Mapped[str] = mapped_column(String(128), default="")
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    drift_status: Mapped[str] = mapped_column(String(16), default=DriftStatus.IDLE.value, index=True)
+    current_holder_id: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    drift_location: Mapped[str] = mapped_column(String(128), default="")
+    drift_count: Mapped[int] = mapped_column(Integer, default=0)

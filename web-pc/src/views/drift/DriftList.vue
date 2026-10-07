@@ -89,16 +89,13 @@
           <el-table v-loading="recordsLoading" :data="records" stripe border>
             <el-table-column prop="drift_id" label="漂流记录 ID" width="180" />
             <el-table-column prop="book_id" label="图书 ID" width="180" />
-            <el-table-column prop="from_user_id" label="上一持有者" min-width="150">
-              <template #default="{ row }">{{ row.from_user_id || '首次上架' }}</template>
-            </el-table-column>
-            <el-table-column prop="holder_id" label="当前持有者" min-width="150" />
+            <el-table-column prop="current_holder_id" label="当前持有者" min-width="150" />
             <el-table-column label="状态" width="110" align="center">
               <template #default="{ row }">
-                <el-tag :type="typeOf(DRIFT_STATUS, row.status)" effect="light">{{ labelOf(DRIFT_STATUS, row.status) }}</el-tag>
+                <el-tag :type="typeOf(DRIFT_STATUS, row.drift_status)" effect="light">{{ labelOf(DRIFT_STATUS, row.drift_status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="location" label="地点" min-width="140" />
+            <el-table-column prop="drift_location" label="地点" min-width="140" />
             <el-table-column label="发生时间" width="170">
               <template #default="{ row }">{{ formatDateTime(row.created_at, true) }}</template>
             </el-table-column>
@@ -122,13 +119,16 @@
       />
       <el-form ref="shelfFormRef" :model="shelfForm" :rules="shelfRules" label-width="90px">
         <el-form-item label="ISBN" prop="isbn">
-          <el-input v-model="shelfForm.isbn" placeholder="扫描或输入 ISBN（可含连字符）" />
+          <el-input v-model="shelfForm.isbn" placeholder="扫描或输入 ISBN；无 ISBN 可留空" />
+        </el-form-item>
+        <el-form-item label="书名" prop="title">
+          <el-input v-model="shelfForm.title" placeholder="无 ISBN 时填写书名" />
+        </el-form-item>
+        <el-form-item label="作者">
+          <el-input v-model="shelfForm.author" placeholder="可选" />
         </el-form-item>
         <el-form-item label="交接地点" prop="location">
           <el-input v-model="shelfForm.location" placeholder="如：图书馆一层大厅" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="shelfForm.note" type="textarea" :rows="2" placeholder="图书成色、联系方式等" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -160,9 +160,9 @@ const poolQuery = reactive({ page: 1, page_size: 10, keyword: '', drift_status: 
 const dialogVisible = ref(false)
 const shelfSubmitting = ref(false)
 const shelfFormRef = ref()
-const shelfForm = reactive({ isbn: '', location: '', note: '' })
+const shelfForm = reactive({ isbn: '', title: '', author: '', location: '' })
 const shelfRules = {
-  isbn: [{ required: true, message: '请输入 ISBN', trigger: 'blur' }],
+  title: [{ validator: (_, value, callback) => (shelfForm.isbn || value?.trim() ? callback() : callback(new Error('无 ISBN 时请填写书名'))), trigger: 'blur' }],
   location: [{ required: true, message: '请填写交接地点', trigger: 'blur' }]
 }
 
@@ -210,7 +210,7 @@ async function onShelfSubmit() {
     const data = await putBookOnShelf({ ...shelfForm })
     ElMessage.success(`《${data.book.title}》已上架，等待领取`)
     dialogVisible.value = false
-    Object.assign(shelfForm, { isbn: '', location: '', note: '' })
+    Object.assign(shelfForm, { isbn: '', title: '', author: '', location: '' })
     loadAll()
   } finally {
     shelfSubmitting.value = false
@@ -219,7 +219,7 @@ async function onShelfSubmit() {
 
 async function onClaim(row) {
   await ElMessageBox.confirm(`确认申领《${row.title}》？确认后将生成一条流转记录。`, '申领确认', { type: 'warning' })
-  await claimDriftBook(row.book_id)
+  await claimDriftBook(row.drift_id)
   ElMessage.success('申领成功，请与上一持有者线下交接')
   loadAll()
 }

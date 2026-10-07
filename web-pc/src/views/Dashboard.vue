@@ -65,7 +65,7 @@ const driftData = ref({ total: 0, by_status: {} })
 
 const cards = computed(() => [
   { label: '活动总数', value: actData.value.total, extra: '全部状态', color: '#2f54eb' },
-  { label: '报名中活动', value: actData.value.by_status?.published ?? 0, extra: labelOf(ACTIVITY_STATUS, 'published'), color: '#22a06b' },
+  { label: '已发布活动', value: actData.value.by_status?.published ?? 0, extra: labelOf(ACTIVITY_STATUS, 'published'), color: '#22a06b' },
   { label: '累计报名', value: actData.value.signup_total ?? 0, extra: '人次', color: '#d97706' },
   { label: '累计签到', value: actData.value.checkin_total ?? 0, extra: '人次', color: '#0ea5e9' },
   { label: '漂流图书', value: driftData.value.total ?? 0, extra: '册', color: '#7c3aed' },

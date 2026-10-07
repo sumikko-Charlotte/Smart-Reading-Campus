@@ -30,7 +30,7 @@ DEMO_PASSWORD = "123456"
 def _to_out(user: User, viewer: CurrentUser | None = None) -> dict:
     data = UserOut.model_validate(user).model_dump()
     is_self = viewer is not None and viewer.user_id == user.user_id
-    is_admin = viewer is not None and viewer.role in (UserRole.ADMIN.value, UserRole.LIBRARIAN.value)
+    is_admin = viewer is not None and viewer.role == UserRole.ADMIN.value
     if not (is_self or is_admin):
         data["phone"] = mask_phone(data["phone"])
         data["email"] = mask_email(data["email"])
@@ -68,7 +68,12 @@ def me(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_
 
 
 @router.get("/users", summary="用户列表（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
-def list_users(pq: PageQuery = Depends(page_query), role: str = Query(default=""), db: Session = Depends(get_db)):
+def list_users(
+    pq: PageQuery = Depends(page_query),
+    role: str = Query(default=""),
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     stmt = select(User).where(User.is_deleted.is_(False))
     if pq.keyword:
         like = f"%{pq.keyword}%"
@@ -77,10 +82,12 @@ def list_users(pq: PageQuery = Depends(page_query), role: str = Query(default=""
         stmt = stmt.where(User.role == role)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    order_col = getattr(User, pq.order_by, User.created_at)
+    if pq.order_by not in {"created_at", "student_no", "name"}:
+        raise BizError(1001, "order_by 不合法")
+    order_col = getattr(User, pq.order_by)
     stmt = stmt.order_by(order_col.desc() if pq.order == "desc" else order_col.asc())
     rows = db.scalars(stmt.offset((pq.page - 1) * pq.page_size).limit(pq.page_size)).all()
-    return ok(page_result([UserOut.model_validate(r).model_dump() for r in rows], pq.page, pq.page_size, total))
+    return ok(page_result([_to_out(r, current) for r in rows], pq.page, pq.page_size, total))
 
 
 @router.post("/users", summary="新增用户（管理端）", dependencies=[Depends(require_roles(UserRole.ADMIN))])
@@ -102,8 +109,12 @@ def update_user(user_id: str, payload: UserUpdate, current: CurrentUser = Depend
         raise BizError(CODE_NOT_FOUND, "用户不存在")
     if current.user_id != user_id and not current.is_admin:
         raise BizError(1003, "只能修改本人信息", http_status=403)
-    for k, v in payload.model_dump(exclude_none=True).items():
-        setattr(row, k, v)
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        if value is None and key in {"name", "status"}:
+            raise BizError(1001, f"{key} 不允许为 null")
+        if value is None and key in {"college", "major", "class_no", "grade", "phone", "email", "avatar_url"}:
+            value = ""
+        setattr(row, key, value)
     db.commit()
     db.refresh(row)
     return ok(_to_out(row, current))
