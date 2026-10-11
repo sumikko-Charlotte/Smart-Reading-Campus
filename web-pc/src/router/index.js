@@ -22,8 +22,8 @@ const routes = [
       {
         path: 'activities',
         name: 'activity-list',
-        component: () => import('@/views/activity/ActivityList.vue'),
-        meta: { title: '活动管理', icon: 'Calendar', roles: ['librarian', 'admin'] }
+        component: () => import('@/views/activity/ActivityHome.vue'),
+        meta: { title: '活动管理', icon: 'Calendar' }
       },
       {
         path: 'activities/create',

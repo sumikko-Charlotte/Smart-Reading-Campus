@@ -1,16 +1,23 @@
 """接口冒烟测试：python -m pytest tests -q  （或直接 python tests/test_api_smoke.py）
 
 覆盖：健康检查 → 登录 → 活动列表/新建/状态机 → 图书列表/扫码 → AI 对话 → 漂流池
-不依赖真实大模型（走 Mock），可离线跑通。
+模型请求使用隔离的 HTTP 响应桩，可离线跑通。
 """
+import json
 import os
 import sys
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app  # noqa: E402
+from app.db.models import Book  # noqa: E402
+from app.services import llm_service  # noqa: E402
 
 client = TestClient(app)
 
@@ -22,7 +29,92 @@ def _login(student_no: str = "T2009") -> str:
     return body["data"]["token"]
 
 
+@patch.object(llm_service.settings, "LLM_ENABLED", True)
 def test_smoke() -> None:
+    mock_recommendation_response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "choices": [{"message": {"content": '{"reasons":["适合入门阅读"]}'}}],
+            "usage": {"total_tokens": 27},
+        },
+    )
+    mock_text_response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"choices": [{"message": {"content": "基于图书信息生成的测试模型回答。"}}], "usage": {"total_tokens": 19}},
+    )
+
+    def mock_recommendation_post(*args, **kwargs):
+        prompt = kwargs["json"]["messages"][0]["content"]
+        candidates_json = prompt.split("候选书目：", 1)[1]
+        candidates = json.loads(candidates_json)
+        result = {
+            "reasons": [
+                f"结合{item['title']}主题生成的测试理由"
+                for item in candidates
+            ]
+        }
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}}],
+                "usage": {"total_tokens": 27},
+            },
+        )
+    test_book = cast(Book, SimpleNamespace(
+        book_id="bok_test",
+        title="测试书目",
+        author="测试作者",
+        category="文学",
+        tags=["入门"],
+        summary="测试简介",
+        borrow_count=12,
+    ))
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post", return_value=mock_recommendation_response
+    ) as post:
+        reasons, tokens = llm_service.recommend_reasons([test_book], "适合入门", 1)
+        assert reasons == {"bok_test": "适合入门阅读"}, reasons
+        assert tokens == 27, tokens
+        assert post.call_args.args[0] == "https://api.deepseek.com/v1/chat/completions"
+        assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-only-key"
+        assert post.call_args.kwargs["json"]["response_format"] == {"type": "json_object"}
+
+    with patch.object(llm_service.settings, "LLM_API_KEY", ""):
+        try:
+            llm_service.chat_reply("qa", "no preset please", None)
+        except llm_service.LLMServiceError as exc:
+            assert "未配置 LLM_API_KEY" in str(exc)
+        else:
+            raise AssertionError("missing API key must not return a Mock answer")
+
+    upstream_response = httpx.Response(402, request=httpx.Request("POST", "https://api.deepseek.com/v1/chat/completions"))
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post",
+        side_effect=httpx.HTTPStatusError("402", request=upstream_response.request, response=upstream_response),
+    ):
+        try:
+            llm_service.chat_reply("qa", "check billing error", None)
+        except llm_service.LLMServiceError as exc:
+            assert "余额不足" in str(exc)
+        else:
+            raise AssertionError("HTTP 402 must map to the insufficient-balance message")
+
+    with patch.object(llm_service.settings, "LLM_ENABLED", False), patch(
+        "app.services.llm_service.httpx.post", side_effect=AssertionError("disabled LLM must not make a request")
+    ):
+        try:
+            llm_service.chat_reply("qa", "billing is disabled", None)
+        except llm_service.LLMServiceError as exc:
+            assert "LLM_ENABLED=true" in str(exc)
+        else:
+            raise AssertionError("disabled LLM must not return a preset answer")
+
+    with patch.object(llm_service.settings, "LLM_ENABLED", True), patch.object(
+        llm_service.settings, "LLM_API_KEY", "test-only-key"
+    ), patch("app.services.llm_service.httpx.post", side_effect=AssertionError("empty candidates must not call model")):
+        empty_reasons, empty_tokens = llm_service.recommend_reasons([], "any", 1)
+        assert empty_reasons == {} and empty_tokens == 0
+
     # 1. 健康检查
     r = client.get("/api/v1/health").json()
     assert r["code"] == 0 and r["data"]["app"], r
@@ -114,6 +206,10 @@ def test_smoke() -> None:
     assert hidden_draft.status_code == 404, hidden_draft.json()
     signup = client.post(f"/api/v1/activities/{aid}/signups", headers=student_headers, json={}).json()
     assert signup["code"] == 0 and signup["data"]["status"] == "approved", signup
+    my_activities = client.get("/api/v1/activities/mine", headers=student_headers).json()
+    assert my_activities["code"] == 0 and my_activities["data"]["total"] >= 1, my_activities
+    my_activity = next(item for item in my_activities["data"]["list"] if item["activity_id"] == aid)
+    assert my_activity["signup_status"] == "approved" and my_activity["checked_in_at"] is None, my_activity
     duplicate = client.post(f"/api/v1/activities/{aid}/signups", headers=student_headers, json={})
     assert duplicate.status_code == 409 and duplicate.json()["code"] == 1005, duplicate.json()
 
@@ -123,7 +219,10 @@ def test_smoke() -> None:
     isbn = next(book["isbn"] for book in books["data"]["list"] if book["isbn"])
     scan = client.get(f"/api/v1/books/isbn/{isbn}").json()
     assert scan["code"] == 0, scan
-    summary = client.post(f"/api/v1/books/{scan['data']['book_id']}/ai-summary", headers=headers).json()
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post", return_value=mock_text_response
+    ):
+        summary = client.post(f"/api/v1/books/{scan['data']['book_id']}/ai-summary", headers=headers).json()
     assert summary["code"] == 0 and summary["data"]["ai_summary"], summary
     for title in ("无 ISBN 测试书一", "无 ISBN 测试书二"):
         created_book = client.post(
@@ -133,13 +232,61 @@ def test_smoke() -> None:
         )
         assert created_book.status_code == 201 and created_book.json()["data"]["publish_date"] is None, created_book.json()
 
-    # 7. AI 对话（非流式）
-    chat = client.post(
-        "/api/v1/ai/chat",
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post", side_effect=mock_recommendation_post
+    ):
+        recommendation = client.post(
+            "/api/v1/books/recommend",
+            headers=headers,
+            json={"scene": "recommend", "limit": 2, "extra_prompt": "适合入门"},
+        )
+    recommendation_body = recommendation.json()
+    assert recommendation.status_code == 200 and recommendation_body["code"] == 0, recommendation_body
+    assert recommendation_body["data"]["items"], recommendation_body
+    conversation = client.get(
+        f"/api/v1/ai/conversations/{recommendation_body['data']['conversation_id']}",
         headers=headers,
-        json={"content": "这本书适合什么基础的人读？", "scene": "qa"},
     ).json()
+    assert conversation["data"]["messages"][0]["tokens"] == 27, conversation
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post", side_effect=llm_service.httpx.ConnectError("test connection failure")
+    ):
+        unavailable = client.post(
+            "/api/v1/books/recommend",
+            headers=headers,
+            json={"scene": "recommend", "limit": 1},
+        )
+    assert unavailable.status_code == 503 and unavailable.json()["code"] == 5000, unavailable.json()
+    assert "test connection failure" not in unavailable.json()["message"], unavailable.json()
+
+    # 7. AI 对话（非流式）
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch(
+        "app.services.llm_service.httpx.post", return_value=mock_text_response
+    ):
+        chat = client.post(
+            "/api/v1/ai/chat",
+            headers=headers,
+            json={"content": "这本书适合什么基础的人读？", "scene": "qa"},
+        ).json()
     assert chat["code"] == 0 and chat["data"]["message_id"] and chat["data"]["content"], chat
+    with patch.object(llm_service.settings, "LLM_API_KEY", "" ):
+        chat_unconfigured = client.post(
+            "/api/v1/ai/chat",
+            headers=headers,
+            json={"content": "不要返回预设回答", "scene": "qa"},
+        )
+    assert chat_unconfigured.status_code == 503, chat_unconfigured.json()
+    assert "未配置 LLM_API_KEY" in chat_unconfigured.json()["message"], chat_unconfigured.json()
+    with patch.object(llm_service.settings, "LLM_API_KEY", "test-only-key"), patch.object(
+        llm_service.settings, "LLM_ENABLED", False
+    ):
+        chat_disabled = client.post(
+            "/api/v1/ai/chat",
+            headers=headers,
+            json={"content": "开关关闭时不应调用模型", "scene": "qa"},
+        )
+    assert chat_disabled.status_code == 503, chat_disabled.json()
+    assert "AI 调用已关闭" in chat_disabled.json()["message"], chat_disabled.json()
 
     # 8. 漂流池 + 流转记录
     pool = client.get("/api/v1/drift/books").json()

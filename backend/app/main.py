@@ -48,6 +48,8 @@ def health():
             "app": settings.APP_NAME,
             "version": "1.0.0",
             "model": settings.LLM_MODEL,
+            "llm_enabled": settings.LLM_ENABLED,
+            "llm_configured": settings.LLM_ENABLED and bool(settings.LLM_API_KEY),
             "prompt_version": settings.PROMPT_VERSION,
             "env": "debug" if settings.DEBUG else "prod",
         }

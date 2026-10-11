@@ -147,14 +147,6 @@ def create_activity(payload: ActivityCreate, current: CurrentUser = Depends(get_
     return ok(_to_out(row, current))
 
 
-@router.get("/{activity_id}", summary="活动详情")
-def get_activity(activity_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    row = _get_or_404(db, activity_id)
-    if row.status == ActivityStatus.DRAFT.value and current.role not in (UserRole.LIBRARIAN.value, UserRole.ADMIN.value):
-        raise BizError(CODE_NOT_FOUND, "活动不存在")
-    return ok(_to_out(row, current))
-
-
 @router.patch("/{activity_id}", summary="编辑活动", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
 def update_activity(
     activity_id: str,
@@ -198,6 +190,61 @@ def publish_activity(
     row.published_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(row)
+    return ok(_to_out(row, current))
+
+
+@router.get("/mine", summary="当前学生的活动参与记录")
+def list_my_activities(
+    pq: PageQuery = Depends(page_query),
+    current: CurrentUser = Depends(require_roles(UserRole.STUDENT)),
+    db: Session = Depends(get_db),
+):
+    stmt = (
+        select(ActivitySignup, Activity)
+        .join(Activity, Activity.activity_id == ActivitySignup.activity_id)
+        .where(
+            ActivitySignup.user_id == current.user_id,
+            ActivitySignup.is_deleted.is_(False),
+            Activity.is_deleted.is_(False),
+        )
+    )
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.execute(
+        stmt.order_by(ActivitySignup.signed_up_at.desc())
+        .offset((pq.page - 1) * pq.page_size)
+        .limit(pq.page_size)
+    ).all()
+    items = [
+        {
+            **_to_out(activity, current),
+            "signup_id": signup.signup_id,
+            "signup_status": signup.status,
+            "signed_up_at": signup.signed_up_at,
+            "checked_in_at": signup.checked_in_at,
+            "certificate_no": signup.certificate_no,
+        }
+        for signup, activity in rows
+    ]
+    result = page_result(items, pq.page, pq.page_size, total)
+    result["checkin_count"] = db.scalar(
+        select(func.count())
+        .select_from(ActivitySignup)
+        .join(Activity, Activity.activity_id == ActivitySignup.activity_id)
+        .where(
+            ActivitySignup.user_id == current.user_id,
+            ActivitySignup.is_deleted.is_(False),
+            ActivitySignup.checked_in_at.is_not(None),
+            Activity.is_deleted.is_(False),
+        )
+    ) or 0
+    return ok(result)
+
+
+@router.get("/{activity_id}", summary="活动详情")
+def get_activity(activity_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = _get_or_404(db, activity_id)
+    if row.status == ActivityStatus.DRAFT.value and current.role not in (UserRole.LIBRARIAN.value, UserRole.ADMIN.value):
+        raise BizError(CODE_NOT_FOUND, "活动不存在")
     return ok(_to_out(row, current))
 
 

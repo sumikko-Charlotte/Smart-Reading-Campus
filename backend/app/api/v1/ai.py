@@ -9,13 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.core.enums import ConversationScene, ConversationStatus, MessageRole
-from app.core.response import CODE_NOT_FOUND, BizError, ok, page_result
+from app.core.response import CODE_NOT_FOUND, CODE_SERVER_ERROR, BizError, ok, page_result
 from app.core.security import CurrentUser, get_current_user, new_id
 from app.db.base import get_db
 from app.db.models import AIConversation, Book
 from app.schemas.ai import ChatRequest, ChatResponse, ConversationBrief, ConversationOut, CopywritingRequest, ChatMessage
 from app.schemas.common import PageQuery
 from app.services import llm_service
+from app.services.llm_service import LLMServiceError
 
 router = APIRouter(prefix="/ai", tags=["AI 能力"])
 
@@ -57,7 +58,11 @@ def chat(payload: ChatRequest, current: CurrentUser = Depends(get_current_user),
         "tokens": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    answer, tokens = llm_service.chat_reply(conv.scene, payload.content, book)
+    try:
+        answer, tokens = llm_service.chat_reply(conv.scene, payload.content, book)
+    except LLMServiceError as exc:
+        db.rollback()
+        raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
     assistant_msg = {
         "message_id": new_id("message"),
         "role": MessageRole.ASSISTANT.value,
@@ -133,7 +138,10 @@ def delete_conversation(conversation_id: str, current: CurrentUser = Depends(get
 
 @router.post("/copywriting", summary="生成活动推文/宣传文案（PC 端管理后台）")
 def copywriting(payload: CopywritingRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    text = llm_service.generate_copy(payload.topic, payload.style)
+    try:
+        text = llm_service.generate_copy(payload.topic, payload.style)
+    except LLMServiceError as exc:
+        raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
     conv = AIConversation(
         user_id=current.user_id,
         scene=ConversationScene.COPYWRITING.value,

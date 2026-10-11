@@ -20,13 +20,28 @@ python -m uvicorn app.main:app --reload --port 8000
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 后按需修改。关键项：
+复制 `.env.example` 为 `.env` 后按需修改。AI 计费开关默认为关闭，页面不会自动调用模型。确认 DeepSeek 账户有余额后，才在本机 `.env` 中填写 API key 并设置 `LLM_ENABLED=true`；`.env` 已加入 Git 忽略，严禁把 key 写入源码、前端或提交记录。修改配置后重启后端。
+
+```dotenv
+LLM_ENABLED=false
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_BASE=https://api.deepseek.com/v1
+LLM_API_KEY=
+LLM_MAX_TOKENS=512
+```
+
+只有同时配置 `LLM_ENABLED=true` 和 `LLM_API_KEY` 时，AI 阅读助手、书目解读和 `/api/v1/books/recommend` 才会调用 DeepSeek。否则接口明确返回 503，不会回退成预设回答。推荐理由以候选顺序映射、最多调用一次；`LLM_MAX_TOKENS` 限制单次回复长度。模型不可用、余额不足或响应格式无效时会显示明确错误。
+
+关键配置项：
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./smart_reading.db` | 切 MySQL：`mysql+pymysql://user:pwd@host:3306/smart_reading?charset=utf8mb4` |
-| `LLM_API_KEY` | 空 | 填上即切换真实大模型调用（第 2 轮） |
+| `LLM_ENABLED` | `false` | 必须显式设为 `true` 才允许产生计费请求 |
+| `LLM_API_KEY` | 空 | 本机配置；非空且已启用时调用 DeepSeek |
 | `LLM_MODEL` | `deepseek-chat` | 底层模型标识，会写入会话 `model` 字段 |
+| `LLM_MAX_TOKENS` | `512` | 限制单次模型回复长度 |
 | `PROMPT_VERSION` | `v1.0` | 提示词版本，用于效果回溯 |
 | `CORS_ORIGINS` | 本地 5173 | 前端本地开发端口白名单 |
 

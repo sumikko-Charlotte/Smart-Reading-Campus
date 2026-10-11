@@ -5,6 +5,9 @@
 """
 import json
 from datetime import datetime, timezone
+from typing import Any
+
+import httpx
 
 from app.core.config import settings
 from app.core.enums import ConversationScene
@@ -40,19 +43,58 @@ def _book_context(book: Book | None) -> str:
     )
 
 
-def _call_llm(prompt: str, scene: str) -> tuple[str, int]:
-    """真实环境下替换为 HTTP 调用；现在返回可预测的 Mock 文本，方便双端联调。"""
-    if settings.LLM_API_KEY:
-        # 预留：httpx.post(f"{settings.LLM_API_BASE}/chat/completions", ...)
-        pass
-    mock = (
-        f"[Mock/{settings.LLM_MODEL}] 场景：{scene}\n"
-        f"（第 1 轮为占位输出，接入真实模型后此段将被替换）\n\n"
-        f"提示词摘要：{prompt[:120]}...\n\n"
-        "**参考输出结构**：\n"
-        "1. 一句话主旨：…\n2. 核心观点：…\n3. 适合人群：…\n4. 延伸阅读：…"
-    )
-    return mock, len(prompt) // 2
+class LLMServiceError(RuntimeError):
+    """模型服务不可用或返回了无法解析的响应。"""
+
+
+def _call_llm(
+    prompt: str,
+    scene: str,
+    response_format: dict[str, str] | None = None,
+) -> tuple[str, int]:
+    """通过 DeepSeek OpenAI 兼容接口生成内容，不允许静默回退为 Mock。"""
+    if not settings.LLM_ENABLED:
+        raise LLMServiceError("AI 调用已关闭；确认账户余额后，在 backend/.env 设置 LLM_ENABLED=true")
+    if not settings.LLM_API_KEY:
+        raise LLMServiceError("后端未配置 LLM_API_KEY")
+
+    base_url = settings.LLM_API_BASE.rstrip("/")
+    endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+    request_body: dict[str, Any] = {
+        "model": settings.LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": settings.LLM_MAX_TOKENS,
+    }
+    if response_format is not None:
+        request_body["response_format"] = response_format
+    try:
+        response = httpx.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
+            json=request_body,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise LLMServiceError("模型服务返回了空内容")
+        tokens = result.get("usage", {}).get("total_tokens", 0)
+        return content.strip(), int(tokens or 0)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 402:
+            message = "DeepSeek 账户余额不足，请充值后重试"
+        elif exc.response.status_code == 401:
+            message = "DeepSeek API key 无效，请检查后端配置"
+        elif exc.response.status_code == 429:
+            message = "DeepSeek 请求频率受限，请稍后重试"
+        else:
+            message = f"DeepSeek 请求失败（HTTP {exc.response.status_code}）"
+        raise LLMServiceError(message) from exc
+    except LLMServiceError:
+        raise
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise LLMServiceError("DeepSeek 服务请求失败，请检查网络和模型配置") from exc
 
 
 def chat_reply(scene: str, question: str, book: Book | None) -> tuple[str, int]:
@@ -72,9 +114,47 @@ def analyze_book(book: Book) -> tuple[str, list[str], int]:
     return text, tags, tokens
 
 
-def recommend_reason(book: Book, rank: int, extra: str) -> str:
-    heat = f"近一年借阅 {book.borrow_count} 次" if book.borrow_count else "馆藏新书"
-    return f"第 {rank} 位推荐：《{book.title}》与你的偏好契合（{heat}；标签 {'、'.join(book.tags or []) or '综合'}）。{extra}".strip()
+def recommend_reasons(books: list[Book], extra: str, limit: int) -> tuple[dict[str, str], int]:
+    """一次调用模型生成理由数组，严格按候选书顺序映射。"""
+    if not books:
+        return {}, 0
+
+    candidates = [
+        {
+            "book_id": book.book_id,
+            "title": book.title,
+            "author": book.author,
+            "category": book.category,
+            "tags": book.tags or [],
+            "summary": book.summary or "",
+            "borrow_count": book.borrow_count,
+        }
+        for book in books
+    ]
+    prompt = (
+        f"你是高校图书馆荐书助手。根据读者偏好“{extra or '未提供特定偏好'}”，从候选书目中为最多 {limit} 本书生成推荐理由。"
+        "理由使用简体中文，单条不超过40字，只能依据给出的书目信息，不得编造。"
+        "必须为每一本候选书按输入顺序生成一条理由。只返回 JSON 对象，格式为 "
+        "{\"reasons\":[\"第一本书的理由\",\"第二本书的理由\"]}。不要返回书名、ID、序号或其他字段。"
+        f"候选书目：{json.dumps(candidates, ensure_ascii=False)}"
+    )
+    content, tokens = _call_llm(
+        prompt,
+        ConversationScene.RECOMMEND.value,
+        response_format={"type": "json_object"},
+    )
+    try:
+        result = json.loads(content)
+        reason_list = result["reasons"]
+        if not isinstance(reason_list, list) or len(reason_list) != len(books):
+            raise ValueError("reasons count must match candidate books")
+        if any(not isinstance(reason, str) or not reason.strip() for reason in reason_list):
+            raise ValueError("each reason must be a non-empty string")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise LLMServiceError("DeepSeek 推荐结果格式无效") from exc
+
+    reasons = {book.book_id: reason.strip() for book, reason in zip(books, reason_list)}
+    return reasons, tokens
 
 
 def generate_copy(topic: str, style: str) -> str:

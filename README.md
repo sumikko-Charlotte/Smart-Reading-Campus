@@ -106,7 +106,7 @@ draft → published → signup_closed → ongoing → finished
 
 | 项目 | 说明 |
 |---|---|
-| 大模型真实调用 | `backend/app/services/llm_service.py` 当前为 Mock，填入 `LLM_API_KEY` 即切换 |
+| 大模型真实调用 | 已接入 DeepSeek：填写 `backend/.env` 的 `LLM_API_KEY` 并保持 `LLM_ENABLED=true` |
 | RAG 向量知识库 | 后续建设书目向量化与检索增强 |
 | `ActivityReport` | 字段已在规范 3.3 定义（`rpt_` 前缀），表与接口待实现周期确认 |
 | 扫码签到 | `ActivitySignup.checked_in_at` 字段已就位；签到凭证规则规范标注为非本轮必做 |

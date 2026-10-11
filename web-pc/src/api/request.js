@@ -18,7 +18,7 @@ export function setToken(token) {
 
 const service = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
-  timeout: 20000
+  timeout: 60000
 })
 
 service.interceptors.request.use((config) => {

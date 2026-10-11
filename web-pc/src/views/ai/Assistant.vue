@@ -163,34 +163,40 @@ async function onSend() {
   sending.value = true
   scrollToBottom()
 
-  try {
-    if (useStream.value) {
-      streaming.value = true
-      streamBuffer.value = ''
-      controller = chatStream(
-        { conversation_id: conversationId.value || null, content: text, scene: 'qa', book_id: bookId.value || null },
-        {
-          onDelta: (delta, frame) => {
-            if (frame?.conversation_id) conversationId.value = frame.conversation_id
-            streamBuffer.value += delta
-            scrollToBottom()
-          },
-          onDone: async (frame) => {
-            if (frame?.conversation_id) conversationId.value = frame.conversation_id
-            messages.value.push({ message_id: `local_${Date.now()}`, role: 'assistant', content: streamBuffer.value, tokens: 0, created_at: new Date().toISOString() })
-            streamBuffer.value = ''
-            streaming.value = false
-            await fetchConversations()
-            scrollToBottom()
-          },
-          onError: (err) => {
-            streaming.value = false
-            streamBuffer.value = ''
-            ElMessage.error(err?.message || '流式请求失败')
-          }
+  if (useStream.value) {
+    streaming.value = true
+    streamBuffer.value = ''
+    controller = chatStream(
+      { conversation_id: conversationId.value || null, content: text, scene: 'qa', book_id: bookId.value || null },
+      {
+        onDelta: (delta, frame) => {
+          if (frame?.conversation_id) conversationId.value = frame.conversation_id
+          streamBuffer.value += delta
+          scrollToBottom()
+        },
+        onDone: async (frame) => {
+          if (frame?.conversation_id) conversationId.value = frame.conversation_id
+          messages.value.push({ message_id: frame?.message_id || `local_${Date.now()}`, role: 'assistant', content: streamBuffer.value, tokens: 0, created_at: new Date().toISOString() })
+          streamBuffer.value = ''
+          streaming.value = false
+          sending.value = false
+          await fetchConversations()
+          scrollToBottom()
+        },
+        onError: (err) => {
+          streaming.value = false
+          streamBuffer.value = ''
+          messages.value = messages.value.filter((message) => message.message_id !== localUserMsg.message_id)
+          input.value = text
+          sending.value = false
+          ElMessage.error(err?.message || '流式请求失败')
         }
-      )
-    } else {
+      }
+    )
+    return
+  }
+
+  try {
       const data = await chat({ conversation_id: conversationId.value || null, content: text, scene: 'qa', book_id: bookId.value || null })
       conversationId.value = data.conversation_id
       messages.value.push({
@@ -202,7 +208,9 @@ async function onSend() {
       })
       await fetchConversations()
       scrollToBottom()
-    }
+  } catch (error) {
+    messages.value = messages.value.filter((message) => message.message_id !== localUserMsg.message_id)
+    input.value = text
   } finally {
     sending.value = false
   }

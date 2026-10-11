@@ -4,11 +4,10 @@
       <div>
         <h2 class="page-title">AI 智能推荐</h2>
         <p class="page-desc">
-          第 1 轮实现：借阅热度榜 Top N + AI 推荐理由（后端 <code>POST /api/v1/books/recommend</code>）；
-          个性化算法与向量召回在第 2 轮接入。
+          根据馆藏信息和你的阅读偏好生成推荐理由。
         </p>
       </div>
-      <el-tag type="warning" effect="plain">骨架页 · 接口已通</el-tag>
+      <el-tag type="info" effect="plain">手动生成</el-tag>
     </div>
 
     <div class="filter-bar">
@@ -73,7 +72,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, Reading } from '@element-plus/icons-vue'
 import { buildBookAiSummary, recommendBooks } from '@/api/modules'
@@ -88,11 +87,15 @@ const analysisLoading = ref(false)
 const analysisText = ref('')
 
 async function onRecommend() {
+  if (loading.value) return
   loading.value = true
+  items.value = []
   try {
     const data = await recommendBooks({ extra_prompt: form.extra_prompt, limit: form.limit })
     items.value = data.items
     ElMessage.success(`已生成 ${data.items.length} 条推荐（模型：${data.model} / 提示词 ${data.prompt_version}）`)
+  } catch (error) {
+    items.value = []
   } finally {
     loading.value = false
   }
@@ -113,12 +116,13 @@ async function onAnalyze(book) {
       target.book.ai_summary = data.ai_summary
       target.book.ai_tags = data.ai_tags
     }
+  } catch (error) {
+    analysisText.value = ''
   } finally {
     analysisLoading.value = false
   }
 }
 
-onMounted(onRecommend)
 </script>
 
 <style scoped>

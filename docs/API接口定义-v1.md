@@ -243,6 +243,8 @@ student 发送空对象 `{}`；用户身份只从 Bearer token 读取。成功�
 
 响应 `data.items[]` 为 `{ book, reason }`，`reason` 由 AI 按推荐场景生成。第 1 轮排序规则为「借阅热度降序 + 更新时间」，第 2 轮替换为向量召回 + 个性化排序。
 
+默认 `LLM_ENABLED=false`，进入页面不会自动调用模型；只有用户点击生成、且同时配置 `LLM_ENABLED=true` 与后端 `LLM_API_KEY` 时，才请求 DeepSeek。理由按候选书顺序映射，不依赖模型复述书目 ID；无候选书时不发请求。余额不足、模型错误或响应格式无效时返回 HTTP 503、`code=5000`，不回退为预设理由。API key 只保存在后端本机 `.env`，不得提交或发送到前端。
+
 ---
 
 ## 4. AI 会话

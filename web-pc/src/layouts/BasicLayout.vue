@@ -81,7 +81,7 @@ const healthOk = ref(false)
 
 const menus = [
   { path: '/dashboard', title: '首页概览', icon: 'Odometer' },
-  { path: '/activities', title: '活动管理', icon: 'Calendar', roles: ['librarian', 'admin'] },
+  { path: '/activities', title: '活动管理', icon: 'Calendar' },
   { path: '/ai/recommend', title: 'AI 智能推荐', icon: 'MagicStick' },
   { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound' },
   { path: '/drift', title: '图书漂流', icon: 'Van' }

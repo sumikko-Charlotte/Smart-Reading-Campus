@@ -10,6 +10,7 @@ export const changeActivityStatus = (id, target_status, reason = '') =>
   request.post(`/activities/${id}/status`, { target_status, reason })
 export const publishActivity = (id) => request.post(`/activities/${id}/publish`, {})
 export const signupActivity = (id) => request.post(`/activities/${id}/signups`, {})
+export const listMyActivities = (params) => request.get('/activities/mine', { params })
 export const listActivitySignups = (id, params) => request.get(`/activities/${id}/signups`, { params })
 export const activityStats = () => request.get('/activities/stats')
 export const generateActivityCopy = (id, style = 'xiaohongshu') =>

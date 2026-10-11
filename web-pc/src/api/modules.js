@@ -8,15 +8,15 @@ export const getBookByIsbn = (isbn) => request.get(`/books/isbn/${isbn}`)
 export const createBook = (data) => request.post('/books', data)
 export const updateBook = (id, data) => request.patch(`/books/${id}`, data)
 export const buildBookAiSummary = (id, forceRefresh = false) =>
-  request.post(`/books/${id}/ai-summary`, null, { params: { force_refresh: forceRefresh } })
-export const recommendBooks = (data) => request.post('/books/recommend', data)
+  request.post(`/books/${id}/ai-summary`, null, { params: { force_refresh: forceRefresh }, timeout: 60000 })
+export const recommendBooks = (data) => request.post('/books/recommend', data, { timeout: 60000 })
 
 // ---------- AI 会话 ----------
-export const chat = (data) => request.post('/ai/chat', data)
+export const chat = (data) => request.post('/ai/chat', data, { timeout: 60000 })
 export const listConversations = (params) => request.get('/ai/conversations', { params })
 export const getConversation = (id) => request.get(`/ai/conversations/${id}`)
 export const deleteConversation = (id) => request.delete(`/ai/conversations/${id}`)
-export const generateCopywriting = (data) => request.post('/ai/copywriting', data)
+export const generateCopywriting = (data) => request.post('/ai/copywriting', data, { timeout: 60000 })
 
 /**
  * SSE 流式对话：与后端 /api/v1/ai/chat?stream=true 的帧格式一致。
@@ -36,7 +36,17 @@ export function chatStream(data, { onDelta, onDone, onError } = {}) {
     signal: controller.signal
   })
     .then(async (resp) => {
-      if (!resp.ok || !resp.body) throw new Error(`流式请求失败：${resp.status}`)
+      if (!resp.ok) {
+        let message = `流式请求失败：${resp.status}`
+        try {
+          const body = await resp.json()
+          message = body.message || message
+        } catch (err) {
+          // Use the HTTP status message when the response is not JSON.
+        }
+        throw new Error(message)
+      }
+      if (!resp.body) throw new Error(`流式请求失败：${resp.status}`)
       const reader = resp.body.getReader()
       const decoder = new TextDecoder('utf-8')
       let buffer = ''

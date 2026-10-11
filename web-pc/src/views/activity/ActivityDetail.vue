@@ -12,14 +12,14 @@
       </div>
       <div>
         <el-button @click="$router.push('/activities')">返回列表</el-button>
-        <el-button type="primary" :disabled="detail.status === 'finished'" @click="$router.push(`/activities/${detail.activity_id}/edit`)">
+        <el-button v-if="store.isStaff" type="primary" :disabled="detail.status === 'finished'" @click="$router.push(`/activities/${detail.activity_id}/edit`)">
           编辑活动
         </el-button>
       </div>
     </div>
 
     <el-row :gutter="16">
-      <el-col :md="16">
+      <el-col :md="store.isStaff ? 16 : 24">
         <div class="card-block">
           <el-descriptions :column="2" border>
             <el-descriptions-item label="分类">{{ labelOf(ACTIVITY_CATEGORY, detail.category) }}</el-descriptions-item>
@@ -44,7 +44,7 @@
         </div>
       </el-col>
 
-      <el-col :md="8">
+      <el-col v-if="store.isStaff" :md="8">
         <div class="card-block">
           <h3 class="section-title">报名与签到</h3>
           <el-progress type="dashboard" :percentage="signupPercent" :width="140" class="dashboard-block" />
@@ -84,10 +84,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { getActivity } from '@/api/activity'
+import { useUserStore } from '@/store/user'
 import { ACTIVITY_CATEGORY, ACTIVITY_STATUS, labelOf, typeOf } from '@/constants'
 import { formatDateTime, formatRange } from '@/utils/format'
 
 const route = useRoute()
+const store = useUserStore()
 const loading = ref(false)
 const detail = ref({})
 

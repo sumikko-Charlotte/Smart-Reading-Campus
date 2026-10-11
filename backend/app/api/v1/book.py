@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.core.enums import BookSource, UserRole
-from app.core.response import CODE_NOT_FOUND, BizError, ok, page_result
-from app.core.security import CurrentUser, get_current_user, require_roles
+from app.core.response import CODE_NOT_FOUND, CODE_SERVER_ERROR, BizError, ok, page_result
+from app.core.security import CurrentUser, get_current_user, new_id, require_roles
 from app.db.base import get_db
 from app.db.models import AIConversation, Book
 from app.schemas.book import (
@@ -22,6 +22,7 @@ from app.schemas.book import (
 )
 from app.schemas.common import PageQuery
 from app.services import llm_service
+from app.services.llm_service import LLMServiceError
 
 router = APIRouter(prefix="/books", tags=["图书"])
 
@@ -119,7 +120,10 @@ def build_ai_summary(
     row = _get_or_404(db, book_id)
     cached = bool(row.ai_summary) and not force_refresh
     if not cached:
-        text, tags, _ = llm_service.analyze_book(row)
+        try:
+            text, tags, _ = llm_service.analyze_book(row)
+        except LLMServiceError as exc:
+            raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
         row.ai_summary = text
         row.ai_tags = tags
         row.ai_summary_updated_at = datetime.now(timezone.utc)
@@ -153,25 +157,37 @@ def build_ai_summary(
 
 @router.post("/recommend", summary="AI 智能推荐（PC 端智能推荐门户）")
 def recommend_books(payload: RecommendRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """推荐逻辑（第 1 轮简化版）：借阅热度榜 Top N + AI 生成推荐理由，后续再叠加个性化算法。"""
+    """先按借阅热度选候选书，再由 DeepSeek 生成个性化推荐理由。"""
     rows = db.scalars(
         select(Book)
-        .where(Book.is_deleted.is_(False), Book.source == BookSource.LIBRARY.value)
+        .where(Book.is_deleted.is_(False), Book.source.in_([BookSource.LIBRARY.value, BookSource.BOTH.value]))
         .order_by(Book.borrow_count.desc(), Book.updated_at.desc())
         .limit(payload.limit)
     ).all()
 
-    items = [
-        RecommendItem(book=BookOut.model_validate(b), reason=llm_service.recommend_reason(b, i + 1, payload.extra_prompt))
-        for i, b in enumerate(rows)
-    ]
+    try:
+        reasons, tokens = llm_service.recommend_reasons(rows, payload.extra_prompt, payload.limit)
+    except LLMServiceError as exc:
+        raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
+
+    items = [RecommendItem(book=BookOut.model_validate(book), reason=reasons[book.book_id]) for book in rows]
+    generated_at = datetime.now(timezone.utc).isoformat()
+    recommendation_text = "\n".join(f"《{item.book.title}》：{item.reason}" for item in items)
     conv = AIConversation(
         user_id=current.user_id,
         scene="recommend",
         title="AI 智能推荐",
         book_id=None,
         model=llm_service.settings.LLM_MODEL,
-        messages=[{"message_id": "msg_local", "role": "assistant", "content": "\n".join(i.reason for i in items), "tokens": 0}],
+        messages=[
+            {
+                "message_id": new_id("message"),
+                "role": "assistant",
+                "content": recommendation_text,
+                "tokens": tokens,
+                "created_at": generated_at,
+            }
+        ],
         message_count=1,
         prompt_version=llm_service.settings.PROMPT_VERSION,
     )
