@@ -45,6 +45,31 @@
 
 ---
 
+## 一·补2 第 2 轮②：本地数据库与脱敏数据申请（10-18 组会第二项）
+
+设计文档：`docs/第2阶段-本地数据库与脱敏数据申请.md`
+申请材料：`docs/数据字段清单-脱敏数据申请.xlsx`（5 个 sheet，可直接发老师）｜完整字段：`docs/数据字典.md`
+
+| 组会要求 | 落地情况 |
+|---|---|
+| 先搭本地库，后续再迁云端 | SQLite 单文件库 + Alembic 版本化迁移；切 MySQL 只改 `DATABASE_URL` 一行 |
+| 整理数据字段清单，向老师申请脱敏数据 | 自动生成申请材料：30 个需申请的字段（其余 176 个系统自建）、4 条脱敏规则、不申请字段及原因、数据量估算 |
+| 为智能体准备数据 | 新增 `borrow_records`（借阅）、`book_favorites`（收藏评分）、`reading_events`（行为埋点）3 张表；`books` 补齐中图法分类号、索书号、页数、定价、目录等 8 个字段 |
+| 数据怎么进来 | `scripts/import_school_data.py`：学生 / 书目 / 借阅三类 CSV，内置脱敏（HMAC-SHA256）与幂等，支持 `--dry-run` |
+
+**新增脚本**
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/migrate.py` | 备份 → 升级 → 校验（一条命令完成，避免 SQLite 迁移失败留残） |
+| `scripts/backup_db.py` | 备份 / 列表 / 恢复（`VACUUM INTO` 快照，默认保留 20 份） |
+| `scripts/import_school_data.py` | 学校脱敏数据导入（学生 / 书目 / 借阅） |
+| `scripts/export_data_dictionary.py` | 从 ORM 模型生成数据字典与脱敏申请清单，改字段后重跑即可 |
+
+**验证**：`alembic check` 无差异；`downgrade -1` 再 `upgrade head` 往返正常；三类 CSV 首次导入创建、二次导入全部 skipped；冒烟测试仍 7 组全过。
+
+---
+
 ## 二、目录结构
 
 ```text
@@ -53,15 +78,21 @@
 ├── 开发指南.md                        ← 日常开发指南
 ├── start-backend.bat / start-frontend.bat
 ├── docs/
-│   ├── 核心数据对象与统一字段规范.md   ← 双端字段口径（v1.2 + 实现对照）
-│   ├── API接口定义-v1.md              ← API 与请求/响应示例
-│   └── 组会提交材料-第1轮.md           ← 组会对齐用（变更点 / 落地状态 / 待确认）
+│   ├── 核心数据对象与统一字段规范.md       ← 双端字段口径（v1.2 + 实现对照）
+│   ├── API接口定义-v1.md                 ← API 与请求/响应示例
+│   ├── 第2阶段-权限与角色设计.md          ← 角色 / 16 个权限点 / 审批流 / 证书
+│   ├── 第2阶段-本地数据库与脱敏数据申请.md ← 建库 / 迁移 / 备份 / 导入 / 上云路径
+│   ├── 数据字典.md                       ← 13 张表全部字段（脚本生成）
+│   ├── 数据字段清单-脱敏数据申请.xlsx      ← 发给老师的申请表
+│   └── 组会提交材料-第1轮.md              ← 组会对齐用（变更点 / 落地状态 / 待确认）
 ├── backend/                           ← FastAPI 工程
-│   ├── app/core/                      配置 / 枚举 / 响应 / 鉴权
+│   ├── alembic/versions/              版本化迁移（基线 + 增量）
+│   ├── app/core/                      配置 / 枚举 / 响应 / 鉴权 / 权限点
 │   ├── app/db/                        SQLAlchemy 模型
 │   ├── app/schemas/                   请求响应契约
-│   ├── app/api/v1/                    用户 / 活动 / 图书 / AI / 漂流路由
-│   ├── scripts/seed.py                演示数据
+│   ├── app/api/v1/                    用户 / 活动 / 图书 / AI / 漂流 / 证书 / 权限
+│   ├── samples/                       导入用示例 CSV
+│   ├── scripts/                       seed / migrate / backup / import / export
 │   └── tests/test_api_smoke.py        冒烟测试
 └── web-pc/                            ← PC 端 Vue 工程
 ```
@@ -78,14 +109,17 @@
 cd backend
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
-.venv/Scripts/python.exe scripts/seed.py
+.venv/Scripts/python.exe scripts/seed.py          # 建表 + 演示数据（内部会自动跑迁移）
 .venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
 - 接口文档：<http://127.0.0.1:8000/docs>
 - 冒烟测试：`.venv/Scripts/python.exe tests/test_api_smoke.py`（可重复运行，测试数据自动清理）
 - 重置演示数据：`.venv/Scripts/python.exe scripts/seed.py --reset`
-- 数据库：SQLite 文件固定在 `backend/smart_reading.db`（`DATABASE_URL` 用绝对路径），从仓库根目录或 `backend/` 启动都指向同一个库，不会再出现两份数据。
+- 查看 / 执行迁移：`.venv/Scripts/python.exe scripts/migrate.py --status` / `scripts/migrate.py`
+- 备份数据库：`.venv/Scripts/python.exe scripts/backup_db.py --tag 组会前`
+- 重新生成字段清单：`.venv/Scripts/python.exe scripts/export_data_dictionary.py`
+- 数据库：SQLite 文件固定在 `backend/smart_reading.db`（`DATABASE_URL` 用绝对路径），从仓库根目录或 `backend/` 启动都指向同一个库。
 
 ### 前端
 
@@ -127,6 +161,9 @@ npm run dev
 | ActivitySummary | `summary_id` | 第 2 轮新增：活动总结正文、现场照片、`status`、`target_roles` |
 | Notification | `notification_id` | 第 2 轮新增：`type`、`target_roles`、`ref_id`（指向活动 / 总结 / 证书） |
 | PermissionLog | `log_id` | 第 2 轮新增：操作人、目标用户、`action`、`permission`、变更前后值 |
+| BorrowRecord | `borrow_id` | 第 2 轮②新增：`reader_hash`、`isbn`、`borrowed_at`、`due_at`、`returned_at`、`renew_count`、`status` |
+| BookFavorite | `favorite_id` | 第 2 轮②新增：收藏与评分（一人一书唯一） |
+| ReadingEvent | `event_id` | 第 2 轮②新增：`event_type`、`book_id`、`keyword`、`duration_sec`、`scene` |
 
 ```text
 draft → pending_review → published → signup_closed → ongoing → finished
@@ -149,7 +186,6 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 | 活动照片上传 | 总结已支持填图片 URL；对象存储接入待做（第 2 轮②一并考虑） |
 | 证书模板可视化配置 | 当前模板参数在代码中固定，后续做成可配置 |
 | 微信小程序端 | 按统一字段规范接入 |
-| 第 2 轮② | 本地数据库搭建：数据字段清单（申请脱敏数据用）、建表设计、云端迁移路径 |
 | 第 2 轮③ | 全面转向智能体：AI 录书 / AI 匹配 / AI 触达 / AI 伴读 |
 
 ---
@@ -180,6 +216,7 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 
 | 版本 | 日期 | 维护角色 | 内容 |
 |---|---|---|---|
+| v2.1 | 2026-10-19 | 万贝 | 第 2 轮②：Alembic 版本化迁移、备份/恢复、三类 CSV 导入（含脱敏与幂等）、13 张表（新增借阅/收藏/行为）、脱敏数据申请清单与云迁移路径 |
 | v2.0 | 2026-10-19 | 万贝 | 第 2 轮①：角色改为 4 类 + 16 权限点、逐项分配与即时生效、活动审批定级、电子证书 PDF、活动总结推送、访客降级 Mock；`DATABASE_URL` 改为绝对路径避免两个库文件；冒烟测试改为可重复运行 |
 | v1.2 | 2026-10-07 | 项目组 | 同步字段规范与接口行为；补 v1.2 实现对照（规范第九章）与组会提交材料；修正演示数据与冒烟测试口径 |
 | v1.2 | 2026-10-07 | 项目组 | 同步字段规范与接口行为，移除演示老师的具体身份信息 |

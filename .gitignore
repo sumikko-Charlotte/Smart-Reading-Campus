@@ -33,3 +33,7 @@ Thumbs.db
 # ---------- 本地数据库与临时产物 ----------
 *.sqlite3
 tmp_*.pdf
+
+# ---------- 数据脱敏盐与本地备份 ----------
+backend/.data_salt
+backend/backups/

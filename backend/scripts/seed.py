@@ -20,13 +20,14 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 
 from app.core.enums import (  # noqa: E402
     ActivityCategory,
     ActivityLevel,
     ActivityStatus,
     BookSource,
+    BorrowStatus,
     CertificateStatus,
     DriftStatus,
     NotificationType,
@@ -42,9 +43,12 @@ from app.db.models import (  # noqa: E402
     ActivitySignup,
     ActivitySummary,
     Book,
+    BookFavorite,
+    BorrowRecord,
     Certificate,
     DriftRecord,
     Notification,
+    ReadingEvent,
     User,
 )
 
@@ -69,12 +73,36 @@ USERS = [
 ]
 
 BOOKS = [
-    dict(isbn="9787115428028", title="深度学习", author="Ian Goodfellow 等", publisher="人民邮电出版社", category="TP181", tags=["人工智能", "机器学习"], borrow_count=86, total_copies=5, available_copies=2),
-    dict(isbn="9787115546081", title="Python 编程：从入门到实践", author="Eric Matthes", publisher="人民邮电出版社", category="TP311", tags=["Python", "入门"], borrow_count=132, total_copies=8, available_copies=3),
-    dict(isbn="9787020002207", title="红楼梦", author="曹雪芹", publisher="人民文学出版社", category="I242", tags=["古典文学", "名著"], borrow_count=74, total_copies=10, available_copies=6),
-    dict(isbn="9787508647357", title="人类简史", author="尤瓦尔·赫拉利", publisher="中信出版社", category="K02", tags=["历史", "文明"], borrow_count=158, total_copies=6, available_copies=1),
-    dict(isbn="9787544253994", title="百年孤独", author="加西亚·马尔克斯", publisher="南海出版公司", category="I775", tags=["拉美文学", "魔幻现实主义"], borrow_count=97, total_copies=4, available_copies=2),
-    dict(isbn="9787111636663", title="Vue.js 设计与实现", author="霍春阳", publisher="机械工业出版社", category="TP393", tags=["前端", "Vue"], borrow_count=45, total_copies=0, available_copies=0),
+    dict(isbn="9787115428028", title="深度学习", author="Ian Goodfellow 等", publisher="人民邮电出版社",
+         publisher_place="北京", publish_date="2017", category="计算机", clc_code="TP181", call_no="TP181/GL2",
+         pages=652, price=168.0, binding="平装", lib_location="沙河三层 A 区",
+         toc="第 1 章 引言\n第 2 章 线性代数\n第 3 章 概率与信息论\n第 5 章 机器学习基础\n第 6 章 深度前馈网络",
+         tags=["人工智能", "机器学习"], borrow_count=86, total_copies=5, available_copies=2),
+    dict(isbn="9787115546081", title="Python 编程：从入门到实践", author="Eric Matthes", publisher="人民邮电出版社",
+         publisher_place="北京", publish_date="2020", category="计算机", clc_code="TP311", call_no="TP311.56/MT2",
+         pages=459, price=89.0, binding="平装", lib_location="沙河三层 A 区",
+         toc="第一部分 基础知识\n第二部分 项目实战\n项目 1 外星人入侵\n项目 2 数据可视化\n项目 3 Web 应用程序",
+         tags=["Python", "入门"], borrow_count=132, total_copies=8, available_copies=3),
+    dict(isbn="9787020002207", title="红楼梦", author="曹雪芹", publisher="人民文学出版社",
+         publisher_place="北京", publish_date="1996", category="文学", clc_code="I242.4", call_no="I242.4/CX4",
+         pages=1606, price=59.7, binding="精装", lib_location="沙河二层 B 区",
+         toc="第一回 甄士隐梦幻识通灵\n第二回 贾夫人仙逝扬州城\n第三回 贾雨村夤缘复旧职",
+         tags=["古典文学", "名著"], borrow_count=74, total_copies=10, available_copies=6),
+    dict(isbn="9787508647357", title="人类简史", author="尤瓦尔·赫拉利", publisher="中信出版社",
+         publisher_place="北京", publish_date="2014", category="历史", clc_code="K02", call_no="K02/HL11",
+         pages=440, price=68.0, binding="精装", lib_location="沙河二层 C 区",
+         toc="第一部分 认知革命\n第二部分 农业革命\n第三部分 人类的融合统一\n第四部分 科学革命",
+         tags=["历史", "文明"], borrow_count=158, total_copies=6, available_copies=1),
+    dict(isbn="9787544253994", title="百年孤独", author="加西亚·马尔克斯", publisher="南海出版公司",
+         publisher_place="海口", publish_date="2011", category="文学", clc_code="I775.45", call_no="I775.45/MG5",
+         pages=360, price=39.5, binding="精装", lib_location="沙河二层 B 区",
+         toc="第一章\n第二章\n第三章",
+         tags=["拉美文学", "魔幻现实主义"], borrow_count=97, total_copies=4, available_copies=2),
+    dict(isbn="9787111636663", title="Vue.js 设计与实现", author="霍春阳", publisher="机械工业出版社",
+         publisher_place="北京", publish_date="2022", category="计算机", clc_code="TP393.092", call_no="TP393.092/HC25",
+         pages=528, price=119.0, binding="平装", lib_location="沙河三层 A 区",
+         toc="第一篇 框架设计概览\n第二篇 响应系统\n第三篇 渲染器\n第四篇 编译器\n第五篇 服务端渲染",
+         tags=["前端", "Vue"], borrow_count=45, total_copies=0, available_copies=0),
 ]
 
 # status / level / organizer_key / offset
@@ -112,7 +140,10 @@ SUMMARY_TEXT = (
 
 def reset_tables() -> None:
     Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    # 连 alembic_version 一起清掉，再按新库流程建表并打版本，保证与迁移链一致
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    init_db()
     print("[seed] 已清空并重建所有表（--reset）")
 
 
@@ -179,6 +210,105 @@ def _ensure_activity(db, data: dict, users: dict[str, User]) -> Activity:
         db.flush()
         print(f"[seed] 新增活动 {data['title']}（{data['status']}）")
     return row
+
+
+def _seed_ai_data(db, users: dict[str, User]) -> None:
+    """借阅记录 / 收藏 / 阅读行为：第三块「智能体」开发时的数据地基。
+
+    只给两个学生账号造少量样本，用于验证表结构与后续推荐链路；
+    真实数据进来后这些演示记录可整体清掉。
+    """
+    if db.scalar(select(BorrowRecord).limit(1)) is not None:
+        return
+
+    books = {b.isbn: b for b in db.scalars(select(Book)).all()}
+    plans = {
+        "2025211987": [  # Alice：偏技术 + 历史
+            ("9787115546081", -120, 30, 28, 1),
+            ("9787115428028", -80, 30, 26, 0),
+            ("9787508647357", -45, 30, 21, 0),
+            ("9787111636663", -12, 30, None, 0),  # 在借
+        ],
+        "2025211995": [  # 万贝：偏文学
+            ("9787020002207", -150, 30, 27, 2),
+            ("9787544253994", -90, 30, 25, 0),
+            ("9787508647357", -30, 30, None, 1),  # 在借
+        ],
+    }
+    for student_no, items in plans.items():
+        user = users.get(student_no)
+        if user is None:
+            continue
+        for isbn, borrow_offset, due_offset, return_offset, renew in items:
+            book = books.get(isbn)
+            if book is None:
+                continue
+            db.add(
+                BorrowRecord(
+                    borrow_id=new_id("borrow"),
+                    user_id=user.user_id,
+                    book_id=book.book_id,
+                    isbn=isbn,
+                    lib_barcode=f"B2023-{uuid.uuid4().hex[:6].upper()}",
+                    borrowed_at=iso(borrow_offset, 10),
+                    due_at=iso(borrow_offset + due_offset, 10),
+                    returned_at=iso(return_offset, 16) if return_offset is not None else None,
+                    renew_count=renew,
+                    status=BorrowStatus.RETURNED.value if return_offset is not None else BorrowStatus.BORROWING.value,
+                )
+            )
+
+    favorites = [
+        ("2025211987", "9787111636663", "想系统学一下响应式原理", 5),
+        ("2025211987", "9787508647357", "", 4),
+        ("2025211995", "9787020002207", "重读第三遍", 5),
+    ]
+    for student_no, isbn, note, rating in favorites:
+        user, book = users.get(student_no), books.get(isbn)
+        if user is None or book is None:
+            continue
+        db.add(
+            BookFavorite(
+                favorite_id=new_id("favorite"),
+                user_id=user.user_id,
+                book_id=book.book_id,
+                note=note,
+                rating=rating,
+            )
+        )
+
+    events = [
+        ("2025211987", "search", "", "", "推荐系统 协同过滤", -9),
+        ("2025211987", "view_book", "9787115428028", "", "", -8),
+        ("2025211987", "ai_recommend", "", "", "想找几本机器学习入门书", -8),
+        ("2025211987", "favorite", "9787111636663", "", "", -6),
+        ("2025211987", "view_activity", "", "act", "", -5),
+        ("2025211995", "search", "", "", "好看的短篇小说", -7),
+        ("2025211995", "view_book", "9787544253994", "", "", -6),
+        ("2025211995", "ai_chat", "9787020002207", "", "红楼梦前五回人物关系", -4),
+        ("2025211995", "summary_view", "", "summary", "", -3),
+    ]
+    for student_no, event_type, isbn, ref_type, keyword, day in events:
+        user = users.get(student_no)
+        if user is None:
+            continue
+        book = books.get(isbn) if isbn else None
+        db.add(
+            ReadingEvent(
+                event_id=new_id("event"),
+                user_id=user.user_id,
+                event_type=event_type,
+                book_id=book.book_id if book else "",
+                ref_id="",
+                keyword=keyword,
+                score=0,
+                duration_sec=0,
+                scene="pc",
+                created_at=iso(day, 20),
+            )
+        )
+    print(f"[seed] 已生成借阅 / 收藏 / 行为样本（借阅 {sum(len(v) for v in plans.values())} 条，"
+          f"收藏 {len(favorites)} 条，行为 {len(events)} 条）")
 
 
 def main() -> None:
@@ -310,6 +440,8 @@ def main() -> None:
                     drift_location="图书馆一层大厅",
                 )
             )
+
+        _seed_ai_data(db, users)
 
         db.commit()
         print("[seed] 完成 ✅")

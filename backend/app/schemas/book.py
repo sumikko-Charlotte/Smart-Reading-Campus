@@ -40,6 +40,15 @@ class BookCreate(RequestModel):
     tags: list[str] = Field(default_factory=list)
     total_copies: int = Field(default=0, ge=0)
     available_copies: int = Field(default=0, ge=0)
+    # ---- 馆藏扩展（第二轮②）：AI 录书写入、前端展示「去哪找这本书」----
+    clc_code: str = Field(default="", max_length=32, description="中图法分类号，如 TP181")
+    call_no: str = Field(default="", max_length=64, description="索书号")
+    publisher_place: str = ""
+    pages: int = Field(default=0, ge=0)
+    price: float = Field(default=0, ge=0)
+    binding: str = ""
+    toc: str = ""
+    lib_location: str = Field(default="", max_length=64, description="馆藏地")
 
     @field_validator("isbn")
     @classmethod
@@ -74,10 +83,26 @@ class BookUpdate(RequestModel):
     tags: list[str] | None = None
     total_copies: int | None = Field(default=None, ge=0)
     available_copies: int | None = Field(default=None, ge=0)
+    clc_code: str | None = None
+    call_no: str | None = None
+    publisher_place: str | None = None
+    pages: int | None = Field(default=None, ge=0)
+    price: float | None = Field(default=None, ge=0)
+    binding: str | None = None
+    toc: str | None = None
+    lib_location: str | None = None
 
 
 class BookOut(ORMModel, BookBase):
     book_id: str
+    clc_code: str = ""
+    call_no: str = ""
+    publisher_place: str = ""
+    pages: int = 0
+    price: float = 0
+    binding: str = ""
+    toc: str = ""
+    lib_location: str = ""
     ai_summary: str
     ai_tags: list[str]
     ai_summary_updated_at: datetime | None = None

@@ -35,6 +35,9 @@ ID_PREFIXES = {
     "summary": "sum",
     "notification": "ntf",
     "permission_log": "plg",
+    "borrow": "brw",
+    "favorite": "fav",
+    "event": "evt",
 }
 
 

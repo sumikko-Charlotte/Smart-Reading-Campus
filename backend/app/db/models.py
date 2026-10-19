@@ -5,13 +5,15 @@
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import (
     ActivityLevel,
     ActivityStatus,
     BookSource,
+    BorrowSource,
+    BorrowStatus,
     CertificateStatus,
     ConversationScene,
     ConversationStatus,
@@ -116,6 +118,17 @@ class Book(Base, TimestampMixin):
     ai_summary: Mapped[str] = mapped_column(Text, default="")
     ai_tags: Mapped[list] = mapped_column(JSON, default=list)
     ai_summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ---- 第二阶段②：馆藏书目扩展（AI 录书 / AI 匹配的输入）----
+    # 均带 server_default：SQLite 加列要求有默认值，同时保证迁移与应用行为一致
+    clc_code: Mapped[str] = mapped_column(String(32), default="", server_default="", index=True)  # 中图法分类号
+    call_no: Mapped[str] = mapped_column(String(64), default="", server_default="")  # 索书号
+    publisher_place: Mapped[str] = mapped_column(String(64), default="", server_default="")  # 出版地
+    pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 页数
+    price: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")  # 定价（元）
+    binding: Mapped[str] = mapped_column(String(32), default="", server_default="")  # 装帧
+    toc: Mapped[str] = mapped_column(Text, default="", server_default="")  # 目录（AI 伴读导读用）
+    lib_location: Mapped[str] = mapped_column(String(64), default="", server_default="")  # 馆藏地
+
 
 
 class AIConversation(Base, TimestampMixin):
@@ -241,3 +254,66 @@ class PermissionLog(Base, TimestampMixin):
     before_value: Mapped[str] = mapped_column(String(64), default="")
     after_value: Mapped[str] = mapped_column(String(64), default="")
     remark: Mapped[str] = mapped_column(String(255), default="")
+
+
+# ------------------------------------------------------------ 第二阶段②：AI 数据层
+
+
+class BorrowRecord(Base, TimestampMixin):
+    """借阅记录：AI 匹配（个性化推荐）与 AI 触达（到期提醒）的核心输入。
+
+    学校侧导出时以 `reader_hash` 替代真实学号，本表 `user_id` 由导入时回填。
+    """
+
+    __tablename__ = "borrow_records"
+
+    borrow_id: Mapped[str] = _id("borrow")
+    user_id: Mapped[str] = mapped_column(String(24), default="", index=True)
+    # 学校导出的读者号是加盐哈希（脱敏规则 R1），导入时按哈希匹配到 user_id；
+    # 匹配不上也保留记录，用于统计「有多少借阅来自尚未注册的学生」
+    reader_hash: Mapped[str] = mapped_column(String(32), default="", server_default="", index=True)
+    book_id: Mapped[str] = mapped_column(String(24), default="", index=True)
+    isbn: Mapped[str] = mapped_column(String(20), default="", index=True)
+    lib_barcode: Mapped[str] = mapped_column(String(32), default="")  # 馆藏条码
+    borrowed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    renew_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default=BorrowStatus.BORROWING.value, index=True)
+    source: Mapped[str] = mapped_column(String(16), default=BorrowSource.LIBRARY.value)
+
+
+class BookFavorite(Base, TimestampMixin):
+    """收藏 / 书架：显式偏好，比点击行为信噪比更高。"""
+
+    __tablename__ = "book_favorites"
+    __table_args__ = (UniqueConstraint("user_id", "book_id", name="uq_book_favorite_user"),)
+
+    favorite_id: Mapped[str] = _id("favorite")
+    user_id: Mapped[str] = mapped_column(String(24), index=True)
+    book_id: Mapped[str] = mapped_column(String(24), index=True)
+    note: Mapped[str] = mapped_column(String(255), default="")  # 用户备注 / 想读理由
+    rating: Mapped[int] = mapped_column(Integer, default=0)  # 1-5，0 表示未评分
+
+
+class ReadingEvent(Base, TimestampMixin):
+    """阅读行为埋点：检索、浏览、AI 互动、报名、读推送等。
+
+    只记「谁在什么场景对什么对象做了什么」，不存正文内容；
+    访客（user_id 为空串）的行为不计入画像。
+    """
+
+    __tablename__ = "reading_events"
+
+    event_id: Mapped[str] = _id("event")
+    user_id: Mapped[str] = mapped_column(String(24), default="", index=True)
+    event_type: Mapped[str] = mapped_column(String(24), index=True)
+    book_id: Mapped[str] = mapped_column(String(24), default="", index=True)
+    activity_id: Mapped[str] = mapped_column(String(24), default="")
+    ref_id: Mapped[str] = mapped_column(String(24), default="")  # 通知 / 总结等
+    keyword: Mapped[str] = mapped_column(String(128), default="")  # 检索词，用于长尾需求挖掘
+    score: Mapped[int] = mapped_column(Integer, default=0)  # 评分 1-5
+    duration_sec: Mapped[int] = mapped_column(Integer, default=0)  # 停留时长
+    scene: Mapped[str] = mapped_column(String(24), default="")  # pc / miniprogram / admin
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+

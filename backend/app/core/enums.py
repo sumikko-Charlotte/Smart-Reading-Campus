@@ -144,3 +144,60 @@ class NotificationType(StrEnum):
     ACTIVITY_PUBLISHED = "activity_published"
     CERTIFICATE_ISSUED = "certificate_issued"
     SYSTEM = "system"
+
+
+# ------------------------------------------------------------ 第二阶段②：AI 数据层
+
+
+class BorrowStatus(StrEnum):
+    """借阅记录状态（AI 匹配 / AI 触达的核心数据来源）。"""
+
+    BORROWING = "borrowing"  # 在借
+    RETURNED = "returned"  # 已归还
+    OVERDUE = "overdue"  # 逾期未还
+
+
+class BorrowSource(StrEnum):
+    LIBRARY = "library"  # 馆藏借阅
+    DRIFT = "drift"  # 漂流获得
+    PURCHASE = "purchase"  # 荐购 / 自购登记
+
+
+class ReadingEventType(StrEnum):
+    """阅读行为埋点类型，用于画像与推荐解释。"""
+
+    SEARCH = "search"  # 检索（带 keyword）
+    VIEW_BOOK = "view_book"  # 查看书目详情
+    VIEW_ACTIVITY = "view_activity"  # 查看活动详情
+    AI_RECOMMEND = "ai_recommend"  # 触发 AI 推荐
+    AI_CHAT = "ai_chat"  # 与伴读助手对话
+    FAVORITE = "favorite"  # 收藏
+    UNFAVORITE = "unfavorite"  # 取消收藏
+    RATE = "rate"  # 评分（score 1-5）
+    SIGNUP = "signup"  # 报名活动
+    CHECKIN = "checkin"  # 签到
+    SUMMARY_VIEW = "summary_view"  # 浏览活动总结
+    NOTIFICATION_READ = "notification_read"  # 打开推送
+
+
+READING_EVENT_LABELS: dict[str, str] = {
+    "search": "检索",
+    "view_book": "查看书目",
+    "view_activity": "查看活动",
+    "ai_recommend": "AI 推荐",
+    "ai_chat": "AI 伴读",
+    "favorite": "收藏",
+    "unfavorite": "取消收藏",
+    "rate": "评分",
+    "signup": "报名",
+    "checkin": "签到",
+    "summary_view": "看总结",
+    "notification_read": "读推送",
+}
+
+BORROW_STATUS_LABELS: dict[str, str] = {
+    "borrowing": "在借",
+    "returned": "已归还",
+    "overdue": "逾期",
+}
+

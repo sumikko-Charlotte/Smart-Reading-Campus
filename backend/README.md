@@ -37,7 +37,7 @@ LLM_MAX_TOKENS=512
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///./smart_reading.db` | 切 MySQL：`mysql+pymysql://user:pwd@host:3306/smart_reading?charset=utf8mb4` |
+| `DATABASE_URL` | `sqlite:///<backend>/smart_reading.db`（绝对路径） | 切 MySQL：`mysql+pymysql://user:pwd@host:3306/smart_reading?charset=utf8mb4` |
 | `LLM_ENABLED` | `false` | 必须显式设为 `true` 才允许产生计费请求 |
 | `LLM_API_KEY` | 空 | 本机配置；非空且已启用时调用 DeepSeek |
 | `LLM_MODEL` | `deepseek-chat` | 底层模型标识，会写入会话 `model` 字段 |
@@ -49,18 +49,23 @@ LLM_MAX_TOKENS=512
 
 ```
 app/
-├── main.py              启动入口：注册中间件、异常处理、路由、启动建表
+├── main.py              启动入口：注册中间件、异常处理、路由、启动时执行迁移
 ├── core/
 │   ├── config.py        全局配置
 │   ├── enums.py         所有枚举 + 活动状态机流转表（双端唯一来源）
+│   ├── permissions.py   权限点、角色默认权限、有效权限计算
 │   ├── response.py      统一响应体/分页/错误码 + 全局异常处理
-│   └── security.py      主键生成、token、RBAC 依赖、手机号邮箱脱敏
+│   └── security.py      主键生成、token、权限依赖、手机号邮箱脱敏
 ├── db/
-│   ├── base.py          引擎/会话/init_db
-│   └── models.py        User / Activity / Book / AIConversation + ActivitySignup / DriftRecord
+│   ├── base.py          引擎/会话/init_db（新库建表+打版本，旧库升级到 head）
+│   └── models.py        13 张表的 ORM 定义
 ├── schemas/             Pydantic 请求响应契约（与规范文档一一对应）
-├── services/llm_service.py  AI 能力层（Mock 实现，接口即最终契约）
-└── api/v1/              user / activity / book / ai / drift 五组路由 + 分页依赖
+├── services/            llm_service（AI 能力层）/ certificate_service（证书 PDF 渲染）
+└── api/v1/              user / activity / book / ai / drift / certificate / summary / permission
+
+alembic/versions/        数据库迁移链（基线 + 增量），改表结构走这里
+scripts/                 seed / migrate / backup_db / import_school_data / export_data_dictionary
+samples/                 导入用示例 CSV
 ```
 
 ## 约定（新增接口时遵守）
