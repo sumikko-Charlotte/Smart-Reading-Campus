@@ -38,6 +38,7 @@ ID_PREFIXES = {
     "borrow": "brw",
     "favorite": "fav",
     "event": "evt",
+    "agent_run": "run",
 }
 
 

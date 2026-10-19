@@ -104,6 +104,7 @@ const menus = [
   { path: '/certificates', title: '我的证书', icon: 'Medal', permission: PERM.CERTIFICATE_VIEW },
   { path: '/certificates/manage', title: '证书管理', icon: 'Files', permission: PERM.CERTIFICATE_ISSUE },
   { path: '/ai/recommend', title: 'AI 智能推荐', icon: 'MagicStick', permission: PERM.AI_RECOMMEND },
+  { path: '/agents', title: '智能体工作台', icon: 'Cpu', permission: PERM.AI_RECOMMEND },
   { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound', permission: PERM.AI_CHAT },
   { path: '/drift', title: '图书漂流', icon: 'Van', permission: PERM.DRIFT_VIEW },
   { path: '/system/users', title: '用户与权限', icon: 'User', permission: PERM.SYSTEM_PERMISSION }

@@ -1,4 +1,4 @@
-# 智阅校园 · 开发交付说明（第 1 轮 + 第 2 轮·权限与角色）
+# 智阅校园 · 开发交付说明（第 1 轮 + 第 2 轮全三项）
 
 > 第 1 轮开发周期：2026-10-06 ~ 2026-10-18　｜　演示验收：10-18 21:00 线上会议
 > 第 2 轮：2026-10-19 起，按 10-18 组会三项议程分三次推进（① 权限与角色 ② 本地数据库 ③ 智能体化）
@@ -70,6 +70,37 @@
 
 ---
 
+## 一·补3 第 2 轮③：全面转向智能体（10-18 组会第三项）
+
+设计文档：`docs/第2阶段-智能体架构.md`
+
+之前是「拼提示词 → 调模型 → 拿文字」，模型不知道馆里有什么书。现在换成「派一件事，它自己去查」：
+模型可以调 10 个只读工具读真实馆藏与读者画像，每次运行的过程都留痕。
+
+| 组会要求 | 落地情况 |
+|---|---|
+| 全部接入智能体，不再只是接 API | 新增 `app/agents/`：场景层 + ReAct 运行时 + 工具层 + 模型层；OpenAI 兼容协议，DeepSeek / 通义 / 本地 Ollama 同一套代码 |
+| AI 录书 | `POST /agents/intake/run`：ISBN/书名/文字 → 查重 → 结构化书目 + 置信度 + 缺失字段，人工确认后才入库 |
+| AI 匹配 | `POST /agents/match/run`：读画像 → 召回 → 核库存 → 带证据的理由；**模型给的书必须真实存在，否则剔除** |
+| AI 触达 | `POST /agents/outreach/run`：查活动真实信息 + 报名人群 → 标题/正文/推送摘要，固定 `needs_human_approval`，只出草稿 |
+| AI 伴读 | `POST /agents/companion/run`：判断意图 → 查馆藏/活动 → 回答带引用（索书号、馆藏地） |
+| 数据字段整理 | 第 2 轮②已完成，另加了 `agent_runs` 表记录每次运行的轨迹 |
+| 各种模型都能调 | 换模型只改 `.env` 三行；不支持 function calling 的模型走文本协议兜底 |
+
+**关键设计**
+
+| 问题 | 做法 |
+|---|---|
+| 模型编造书目 | 所有 `book_id` / 引用回库核对，核不上就剔除；全核不上则整次降级 |
+| 成本失控 | 最多 4 步、6000 token 预算、45 秒超时，超了强制收尾 |
+| 越权查数据 | 工具声明允许的场景，伴读场景根本拿不到「报名人群分布」这类工具 |
+| 没 key 就演示不了 | 完整规则降级链（匹配/录书/触达/伴读四套），降级必标 `degraded` + 原因 |
+| 真实数据没到 | `scripts/simulate_data.py` 按学院-兴趣分布生成带 `data_source='simulated'` 标记的样本，真实数据到位后 `--purge` 精确替换 |
+
+**验证**：`tests/test_agent_smoke.py` 25 项全过（含用假模型驱动完整 ReAct 循环：两轮调用、工具结果回灌、防编造剔除、四场景降级）；原有 7 组回归测试仍全过；前端 `/agents` 工作台构建通过。
+
+---
+
 ## 二、目录结构
 
 ```text
@@ -82,6 +113,7 @@
 │   ├── API接口定义-v1.md                 ← API 与请求/响应示例
 │   ├── 第2阶段-权限与角色设计.md          ← 角色 / 16 个权限点 / 审批流 / 证书
 │   ├── 第2阶段-本地数据库与脱敏数据申请.md ← 建库 / 迁移 / 备份 / 导入 / 上云路径
+│   ├── 第2阶段-智能体架构.md              ← 四场景 / 工具清单 / 降级链 / 换模型
 │   ├── 数据字典.md                       ← 13 张表全部字段（脚本生成）
 │   ├── 数据字段清单-脱敏数据申请.xlsx      ← 发给老师的申请表
 │   └── 组会提交材料-第1轮.md              ← 组会对齐用（变更点 / 落地状态 / 待确认）
@@ -90,10 +122,11 @@
 │   ├── app/core/                      配置 / 枚举 / 响应 / 鉴权 / 权限点
 │   ├── app/db/                        SQLAlchemy 模型
 │   ├── app/schemas/                   请求响应契约
-│   ├── app/api/v1/                    用户 / 活动 / 图书 / AI / 漂流 / 证书 / 权限
+│   ├── app/agents/                    智能体：运行时 / 工具 / 四场景 / 降级
+│   ├── app/api/v1/                    用户 / 活动 / 图书 / AI / 智能体 / 漂流 / 证书 / 权限
 │   ├── samples/                       导入用示例 CSV
-│   ├── scripts/                       seed / migrate / backup / import / export
-│   └── tests/test_api_smoke.py        冒烟测试
+│   ├── scripts/                       seed / simulate / migrate / backup / import / export
+│   └── tests/                         test_api_smoke / test_agent_smoke
 └── web-pc/                            ← PC 端 Vue 工程
 ```
 
@@ -119,6 +152,9 @@ python -m venv .venv
 - 查看 / 执行迁移：`.venv/Scripts/python.exe scripts/migrate.py --status` / `scripts/migrate.py`
 - 备份数据库：`.venv/Scripts/python.exe scripts/backup_db.py --tag 组会前`
 - 重新生成字段清单：`.venv/Scripts/python.exe scripts/export_data_dictionary.py`
+- 生成 AI 模拟数据（真实脱敏数据到位前）：`.venv/Scripts/python.exe scripts/simulate_data.py`
+- 清除模拟数据（真实数据到了）：`.venv/Scripts/python.exe scripts/simulate_data.py --purge --purge-books`
+- 智能体链路测试：`.venv/Scripts/python.exe tests/test_agent_smoke.py`
 - 数据库：SQLite 文件固定在 `backend/smart_reading.db`（`DATABASE_URL` 用绝对路径），从仓库根目录或 `backend/` 启动都指向同一个库。
 
 ### 前端
@@ -139,6 +175,8 @@ npm run dev
 | `2025211987` | Alice | 学生 | 7 | 学生默认权限 |
 | `2025211995` | 万贝 | 学生 | 8 | 额外授予 `activity:create`（学生会成员） |
 | `2025211996` | Bob | 学生 | 7 | 普通学生对照 |
+| `guest` | 访客 | 访客 | 3 | 只看不报名，AI 推荐走降级 |
+| `SIM20260000` 起 | 模拟学生 | 学生 | 7 | AI 模拟数据账号（`simulate_data.py` 生成），可直接登录演示 |
 | `guest` | 访客 | 访客 | 3 | 只读 + Mock 推荐 |
 
 > 演示「权限即时生效」：用 `admin` 收回 `2025211987` 的 `activity:signup`，该账号**不用重新登录**即刻无法报名。
@@ -179,14 +217,16 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 
 | 项目 | 说明 |
 |---|---|
-| 大模型真实调用 | 已接入 DeepSeek：填写 `backend/.env` 的 `LLM_API_KEY` 并保持 `LLM_ENABLED=true` |
+| 大模型真实调用 | 智能体层已完成，当前 key 失效（HTTP 401）走降级。换有效 key 并设 `LLM_ENABLED=true` 即启用；也可切本地 Ollama 断网演示 |
 | RAG 向量知识库 | 后续建设书目向量化与检索增强 |
 | 扫码签到 | `ActivitySignup.checked_in_at` 字段已就位；签到凭证规则规范标注为非本轮必做 |
 | 取消报名接口 | 规范 7.2.6 标注非本轮必做；数据层已支持 `cancelled` 记录窗口内重新激活 |
 | 活动照片上传 | 总结已支持填图片 URL；对象存储接入待做（第 2 轮②一并考虑） |
 | 证书模板可视化配置 | 当前模板参数在代码中固定，后续做成可配置 |
 | 微信小程序端 | 按统一字段规范接入 |
-| 第 2 轮③ | 全面转向智能体：AI 录书 / AI 匹配 / AI 触达 / AI 伴读 |
+| 录书 OCR | 目前只接文字，图片识别待接第三方 OCR |
+| 向量检索 | 当前用关键词 + 中图法分类召回，书目上万后需加向量索引 |
+| 触达到期提醒 | 工具层已能取借阅与应还日期，等真实借阅数据进来再接 |
 
 ---
 
@@ -200,6 +240,22 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 4. 学生端「我的证书」可下载 PDF（A4 横版、含公章与验真码）；`/certificates/verify/{code}` 无 token 也能查，姓名脱敏为「万*」。
 5. 活动结束后写总结并发布 → 学生 / 访客端「活动推送」流可见，访客消息中心收到推送。
 6. 未登录打开首页：可看活动、看漂流状态、用 AI 推荐（页面提示「访客体验模式，推荐理由由本地规则生成」），但报名按钮不出现。
+
+**第 2 轮②（本地数据库）**
+
+1. `alembic check` 输出无差异；`alembic downgrade -1` 再 `upgrade head` 往返正常。
+2. `scripts/import_school_data.py --students ... --dry-run` 可预演不写库；正式导入后二次执行全部 skipped（幂等）。
+3. `scripts/backup_db.py --list` 能看到快照；`scripts/migrate.py` 会先备份再升级。
+
+**第 2 轮③（智能体）**
+
+1. 登录 `2025211995` → 左侧「智能体工作台」→ 选「AI 匹配」→ 直接点运行（不填需求）：右侧出现运行轨迹，能看到 `user_profile` / `search_books` / `book_stats` 等步骤，以及每步返回了什么。
+2. 换 `2025211987`（Alice）登录再跑一次：推荐结果不同，因为两人借阅画像不同。
+3. 用 `guest` 登录：只能看到「AI 匹配」场景；运行结果显示访客降级原因，不会调用真实模型。
+4. 页面顶部有黄色提示条说明当前为降级模式（模型 key 失效），以及蓝色提示条说明包含模拟数据。
+5. 选「AI 触达」→ 选一场活动 → 运行：生成的文案里时间地点名额与活动详情一致，且底部写明「AI 只出草稿，不自动发送」。
+6. 选「AI 录书」→ 输入 ISBN `9787115428028`：提示「馆藏中已存在这本书」，不会重复录入。
+7. `.venv/Scripts/python.exe tests/test_agent_smoke.py` 输出「冒烟测试全部通过 ✅（25 项）」。
 
 **第 1 轮**
 
@@ -216,7 +272,7 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 
 | 版本 | 日期 | 维护角色 | 内容 |
 |---|---|---|---|
-| v2.1 | 2026-10-19 | 万贝 | 第 2 轮②：Alembic 版本化迁移、备份/恢复、三类 CSV 导入（含脱敏与幂等）、13 张表（新增借阅/收藏/行为）、脱敏数据申请清单与云迁移路径 |
+| v2.2 | 2026-10-19 | 万贝 | 第 2 轮③：智能体层（ReAct 运行时 + 10 个只读工具 + 四场景 + 规则降级链）、`agent_runs` 运行轨迹、防编造校验、智能体工作台页面、AI 模拟数据集（带来源标记，可一键替换）；`/books/recommend` 契约不变、内部改为智能体实现 |
 | v2.0 | 2026-10-19 | 万贝 | 第 2 轮①：角色改为 4 类 + 16 权限点、逐项分配与即时生效、活动审批定级、电子证书 PDF、活动总结推送、访客降级 Mock；`DATABASE_URL` 改为绝对路径避免两个库文件；冒烟测试改为可重复运行 |
 | v1.2 | 2026-10-07 | 项目组 | 同步字段规范与接口行为；补 v1.2 实现对照（规范第九章）与组会提交材料；修正演示数据与冒烟测试口径 |
 | v1.2 | 2026-10-07 | 项目组 | 同步字段规范与接口行为，移除演示老师的具体身份信息 |

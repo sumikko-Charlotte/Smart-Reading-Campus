@@ -40,12 +40,27 @@ class Settings(BaseSettings):
 
     # 大模型：填写 LLM_API_KEY 后默认启用；设为 false 可紧急关闭以免扣费
     LLM_ENABLED: bool = True
+    # provider 只影响默认 base_url 的推断与错误提示，实际都走 OpenAI 兼容协议：
+    #   deepseek  https://api.deepseek.com/v1
+    #   openai    https://api.openai.com/v1
+    #   ollama    本地 http://127.0.0.1:11434/v1（无需 key）
+    #   qwen      https://dashscope.aliyuncs.com/compatible-mode/v1
     LLM_PROVIDER: str = "deepseek"
     LLM_MODEL: str = "deepseek-chat"
     LLM_API_BASE: str = "https://api.deepseek.com/v1"
     LLM_API_KEY: str = ""
     LLM_MAX_TOKENS: int = 512
     PROMPT_VERSION: str = "v1.0"
+    # 智能体运行时：超时、重试写在这里，避免散落在各处
+    LLM_TIMEOUT_SEC: float = 45.0
+    LLM_RETRY: int = 1
+    LLM_TEMPERATURE: float = 0.3
+    # 智能体单次运行最多几步工具调用；步数越多越慢越贵，4 步覆盖本项目所有场景
+    AGENT_MAX_STEPS: int = 4
+    # 单次运行的 token 预算，超出即停止并输出已有结论
+    AGENT_TOKEN_BUDGET: int = 6000
+    # 是否允许工具调用；关掉后所有场景退回单轮生成（仍可用，只是不再自己查库）
+    AGENT_TOOLS_ENABLED: bool = True
 
 
 @lru_cache

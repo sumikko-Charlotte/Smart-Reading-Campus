@@ -58,13 +58,19 @@ app/
 │   └── security.py      主键生成、token、权限依赖、手机号邮箱脱敏
 ├── db/
 │   ├── base.py          引擎/会话/init_db（新库建表+打版本，旧库升级到 head）
-│   └── models.py        13 张表的 ORM 定义
+│   └── models.py        14 张表的 ORM 定义
+├── agents/              智能体层
+│   ├── runtime.py       ReAct 循环：步数 / token 预算 / 工具白名单
+│   ├── tools.py         10 个只读工具 + 场景白名单 + 调用轨迹
+│   ├── prompts.py       四场景系统提示词
+│   ├── scenes.py        四场景编排 + 模型输出校验（防编造）
+│   └── fallback.py      无模型时的规则降级（四套）
 ├── schemas/             Pydantic 请求响应契约（与规范文档一一对应）
-├── services/            llm_service（AI 能力层）/ certificate_service（证书 PDF 渲染）
-└── api/v1/              user / activity / book / ai / drift / certificate / summary / permission
+├── services/            llm_client（工具调用）/ llm_service（旧接口兼容）/ certificate_service
+└── api/v1/              user / activity / book / ai / agent / drift / certificate / summary / permission
 
 alembic/versions/        数据库迁移链（基线 + 增量），改表结构走这里
-scripts/                 seed / migrate / backup_db / import_school_data / export_data_dictionary
+scripts/                 seed / simulate_data / migrate / backup_db / import_school_data / export_data_dictionary
 samples/                 导入用示例 CSV
 ```
 

@@ -59,6 +59,8 @@ class User(Base, TimestampMixin):
     granted_permissions: Mapped[list] = mapped_column(JSON, default=list)
     revoked_permissions: Mapped[list] = mapped_column(JSON, default=list)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 数据来源：real=真实（学校脱敏数据或人工录入）/ simulated=AI 模拟，用于在真实数据到位后精确替换
+    data_source: Mapped[str] = mapped_column(String(16), default="real", server_default="real", index=True)
 
 
 class Activity(Base, TimestampMixin):
@@ -118,6 +120,8 @@ class Book(Base, TimestampMixin):
     ai_summary: Mapped[str] = mapped_column(Text, default="")
     ai_tags: Mapped[list] = mapped_column(JSON, default=list)
     ai_summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # real=真实馆藏导出 / simulated=为跑通智能体补充的样本书目
+    data_source: Mapped[str] = mapped_column(String(16), default="real", server_default="real", index=True)
     # ---- 第二阶段②：馆藏书目扩展（AI 录书 / AI 匹配的输入）----
     # 均带 server_default：SQLite 加列要求有默认值，同时保证迁移与应用行为一致
     clc_code: Mapped[str] = mapped_column(String(32), default="", server_default="", index=True)  # 中图法分类号
@@ -281,6 +285,8 @@ class BorrowRecord(Base, TimestampMixin):
     renew_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default=BorrowStatus.BORROWING.value, index=True)
     source: Mapped[str] = mapped_column(String(16), default=BorrowSource.LIBRARY.value)
+    # 同 User.data_source：真实数据到位后按此字段整体替换模拟样本
+    data_source: Mapped[str] = mapped_column(String(16), default="real", server_default="real", index=True)
 
 
 class BookFavorite(Base, TimestampMixin):
@@ -294,6 +300,7 @@ class BookFavorite(Base, TimestampMixin):
     book_id: Mapped[str] = mapped_column(String(24), index=True)
     note: Mapped[str] = mapped_column(String(255), default="")  # 用户备注 / 想读理由
     rating: Mapped[int] = mapped_column(Integer, default=0)  # 1-5，0 表示未评分
+    data_source: Mapped[str] = mapped_column(String(16), default="real", server_default="real", index=True)
 
 
 class ReadingEvent(Base, TimestampMixin):
@@ -315,5 +322,30 @@ class ReadingEvent(Base, TimestampMixin):
     score: Mapped[int] = mapped_column(Integer, default=0)  # 评分 1-5
     duration_sec: Mapped[int] = mapped_column(Integer, default=0)  # 停留时长
     scene: Mapped[str] = mapped_column(String(24), default="")  # pc / miniprogram / admin
+    data_source: Mapped[str] = mapped_column(String(16), default="real", server_default="real", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
+
+
+class AgentRun(Base, TimestampMixin):
+    """智能体运行记录：每次「让 AI 干一件事」都留一条轨迹。
+
+    存的是过程而不是结果：调了哪些工具、几步、花了多少 token、是不是降级了。
+    出问题时能回答「这次为什么推荐了这本书」，也方便算成本。
+    """
+
+    __tablename__ = "agent_runs"
+
+    run_id: Mapped[str] = _id("agent_run")
+    scene: Mapped[str] = mapped_column(String(24), index=True)
+    user_id: Mapped[str] = mapped_column(String(24), default="", index=True)
+    user_name: Mapped[str] = mapped_column(String(64), default="")
+    input_summary: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="success", index=True)
+    degraded_reason: Mapped[str] = mapped_column(String(255), default="")
+    steps: Mapped[int] = mapped_column(Integer, default=0)
+    tool_calls: Mapped[list] = mapped_column(JSON, default=list)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    elapsed_ms: Mapped[int] = mapped_column(Integer, default=0)
+    output_summary: Mapped[str] = mapped_column(String(255), default="")

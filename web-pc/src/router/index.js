@@ -82,6 +82,12 @@ const routes = [
         meta: { title: '消息推送', icon: 'Bell', menu: true, permission: PERM.ACTIVITY_VIEW }
       },
       {
+        path: 'agents',
+        name: 'agent-workbench',
+        component: () => import('@/views/agent/AgentWorkbench.vue'),
+        meta: { title: '智能体工作台', icon: 'Cpu', menu: true, permission: PERM.AI_RECOMMEND }
+      },
+      {
         path: 'ai/recommend',
         name: 'ai-recommend',
         component: () => import('@/views/ai/Recommend.vue'),

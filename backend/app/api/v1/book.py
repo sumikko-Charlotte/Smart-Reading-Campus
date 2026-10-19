@@ -22,6 +22,7 @@ from app.schemas.book import (
     RecommendResponse,
 )
 from app.schemas.common import PageQuery
+from app.agents import scenes
 from app.services import llm_service
 from app.services.llm_service import LLMServiceError
 
@@ -170,38 +171,43 @@ def recommend_books(
     current: CurrentUser = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """先按借阅热度选候选书，再由模型生成个性化推荐理由。
+    """对外契约不变，内部换成智能体：它自己查画像、找候选、核库存，再写理由。
 
-    访客（匿名）不消耗真实模型额度：走确定性 Mock，并返回 degraded=true 供前端提示。
+    访客按设计不接真实模型，直接返回规则推荐并标 degraded=true。
+    返回值额外带上 trace，前端可以展示"这次推荐是怎么来的"。
     """
-    rows = db.scalars(
-        select(Book)
-        .where(Book.is_deleted.is_(False), Book.source.in_([BookSource.LIBRARY.value, BookSource.BOTH.value]))
-        .order_by(Book.borrow_count.desc(), Book.updated_at.desc())
-        .limit(payload.limit)
-    ).all()
+    role = "visitor" if (current.is_anonymous or current.is_visitor) else current.role
+    result = scenes.run_match(
+        db,
+        current.user_id or "",
+        role,
+        {"query": payload.extra_prompt, "limit": payload.limit},
+    )
+    matched = (result.get("result") or {}).get("items") or []
+    book_ids = [item["book_id"] for item in matched]
+    books = {
+        book.book_id: book
+        for book in db.scalars(select(Book).where(Book.book_id.in_(book_ids))).all()
+    } if book_ids else {}
 
-    degraded = current.is_anonymous or current.is_visitor
-    if degraded:
-        reasons, tokens = llm_service.mock_recommend_reasons(rows, payload.extra_prompt), 0
-    else:
-        try:
-            reasons, tokens = llm_service.recommend_reasons(rows, payload.extra_prompt, payload.limit)
-        except LLMServiceError as exc:
-            raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
-
-    items = [RecommendItem(book=BookOut.model_validate(book), reason=reasons[book.book_id]) for book in rows]
-    generated_at = datetime.now(timezone.utc).isoformat()
-    recommendation_text = "\n".join(f"《{item.book.title}》：{item.reason}" for item in items)
+    items = [
+        RecommendItem(book=BookOut.model_validate(books[item["book_id"]]), reason=item["reason"])
+        for item in matched
+        if item["book_id"] in books
+    ]
+    degraded = bool(result.get("degraded"))
+    tokens = int(result.get("tokens") or 0)
 
     conversation_id = ""
-    if not degraded:
+    if not degraded and items:
+        generated_at = datetime.now(timezone.utc).isoformat()
+        recommendation_text = "\n".join(f"《{item.book.title}》：{item.reason}" for item in items)
         conv = AIConversation(
             user_id=current.user_id,
             scene="recommend",
             title="AI 智能推荐",
             book_id=None,
-            model=llm_service.settings.LLM_MODEL,
+            model=result.get("model") or llm_service.settings.LLM_MODEL,
             messages=[
                 {
                     "message_id": new_id("message"),
@@ -222,8 +228,14 @@ def recommend_books(
         RecommendResponse(
             conversation_id=conversation_id,
             items=items,
-            model="mock" if degraded else llm_service.settings.LLM_MODEL,
+            model=(result.get("model") or "rules") if not degraded else "mock",
             prompt_version=llm_service.settings.PROMPT_VERSION,
         ).model_dump()
-        | {"degraded": degraded}
+        | {
+            "degraded": degraded,
+            "degraded_reason": result.get("degraded_reason") or "",
+            "trace": result.get("trace") or [],
+            "explanation": (result.get("result") or {}).get("explanation") or "",
+            "steps": result.get("steps") or 0,
+        }
     )
