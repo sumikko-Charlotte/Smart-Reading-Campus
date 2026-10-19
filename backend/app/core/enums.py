@@ -149,9 +149,17 @@ class SummaryStatus(StrEnum):
 
 
 class NotificationType(StrEnum):
-    ACTIVITY_SUMMARY = "activity_summary"  # 活动总结推送
-    ACTIVITY_PUBLISHED = "activity_published"
+    ACTIVITY_SUMMARY = "activity_summary"  # 参加过的活动发布了回顾
+    ACTIVITY_PUBLISHED = "activity_published"  # 活动审批通过并发布
+    ACTIVITY_REJECTED = "activity_rejected"  # 活动被驳回
+    ACTIVITY_CANCELLED = "activity_cancelled"  # 活动取消
+    ACTIVITY_REVIEW = "activity_review"  # 有待你审批的活动
+    ACTIVITY_STATUS = "activity_status"  # 活动状态变化（报名截止 / 开始 / 结束）
     CERTIFICATE_ISSUED = "certificate_issued"
+    PERMISSION_REQUEST = "permission_request"  # 有待你审批的权限申请
+    PERMISSION_APPROVED = "permission_approved"  # 你的权限申请通过
+    PERMISSION_REJECTED = "permission_rejected"  # 你的权限申请被驳回
+    PERMISSION_CHANGED = "permission_changed"  # 管理员直接调整了你的权限
     SYSTEM = "system"
 
 

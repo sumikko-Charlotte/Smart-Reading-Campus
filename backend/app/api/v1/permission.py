@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.api.v1.user import user_out
-from app.core.enums import PermissionRequestStatus, UserRole
+from app.core.enums import NotificationType, PermissionRequestStatus, UserRole
 from app.core.permissions import (
     ALL_PERMISSIONS,
     NON_DELEGABLE,
@@ -40,10 +40,18 @@ from app.schemas.user import (
     PermissionSummary,
     RoleUpdateRequest,
 )
+from app.services import notification_service as svc
 
 router = APIRouter(tags=["权限管理"])
 
 SUPER_ONLY = Depends(require_permissions(Permission.SYSTEM_PERMISSION))
+
+PERMISSION_NAMES: dict[str, str] = {item["code"]: item["name"] for item in PERMISSION_CATALOG}
+
+
+def _names(codes) -> str:
+    """把权限码翻成中文，消息里给人看。"""
+    return "、".join(PERMISSION_NAMES.get(code, code) for code in codes) or "—"
 
 
 @router.get("/permissions/catalog", summary="权限目录（分组 + 各角色默认权限）")
@@ -162,6 +170,28 @@ def update_user_permissions(
     target.revoked_permissions = sorted(revoked)
     for code, action, before, after in changes:
         _log(db, current, target, action, code, before, after, payload.remark)
+
+    # 让被调整的人立刻知道，而不是某天发现按钮不见了
+    granted_codes = [code for code, action, _, _ in changes if action == "grant"]
+    revoked_codes = [code for code, action, _, _ in changes if action == "revoke"]
+    parts = []
+    if granted_codes:
+        parts.append(f"新开通：{_names(granted_codes)}")
+    if revoked_codes:
+        parts.append(f"已收回：{_names(revoked_codes)}")
+    if payload.remark:
+        parts.append(f"说明：{payload.remark}")
+    svc.notify_user(
+        db,
+        target.user_id,
+        type=NotificationType.PERMISSION_CHANGED.value,
+        title="你的权限已被管理员调整",
+        content="；".join(parts),
+        ref_type="user",
+        ref_id=target.user_id,
+        actor_id=current.user_id,
+        actor_name=current.name,
+    )
     db.commit()
     db.refresh(target)
     return ok(
@@ -196,6 +226,17 @@ def update_user_role(
     target.revoked_permissions = []
     _log(db, current, target, "role_change", "role", ROLE_LABELS.get(before, before),
          ROLE_LABELS.get(payload.role, payload.role), payload.remark)
+    svc.notify_user(
+        db,
+        target.user_id,
+        type=NotificationType.PERMISSION_CHANGED.value,
+        title=f"你的角色已由「{ROLE_LABELS.get(before, before)}」调整为「{ROLE_LABELS.get(payload.role, payload.role)}」",
+        content="角色变化后权限按新角色默认值重新计算，个人额外授权已清空。",
+        ref_type="user",
+        ref_id=target.user_id,
+        actor_id=current.user_id,
+        actor_name=current.name,
+    )
     db.commit()
     db.refresh(target)
     return ok(user_out(target, current))
@@ -309,6 +350,19 @@ def create_permission_request(
         status=PermissionRequestStatus.PENDING.value,
     )
     db.add(request)
+    # 通知所有真正拥有「权限分配」的人（含被额外授予该权限的管理员）
+    svc.notify_permission_holders(
+        db,
+        Permission.SYSTEM_PERMISSION.value,
+        exclude_user_id=row.user_id,
+        type=NotificationType.PERMISSION_REQUEST.value,
+        title=f"{row.name} 申请权限：{_names(wanted)}",
+        content=request.reason,
+        ref_type="permission_request",
+        ref_id=request.request_id,
+        actor_id=row.user_id,
+        actor_name=row.name,
+    )
     db.commit()
     db.refresh(request)
     return ok(_request_out(request))
@@ -438,6 +492,35 @@ def review_permission_request(
     row.reviewer_name = current.name or "系统管理员"
     row.review_comment = payload.comment.strip()
     row.reviewed_at = datetime.now(timezone.utc)
+
+    # 结果通知申请人：通过的列出实际生效的权限，驳回的附上审批意见
+    if payload.approve:
+        title = "你的权限申请已通过"
+        detail = f"已开通：{_names(granted_now)}" if granted_now else f"申请中的权限已全部拥有：{_names(row.permissions)}"
+    else:
+        title = "你的权限申请被驳回"
+        detail = f"申请权限：{_names(row.permissions)}"
+    if row.review_comment:
+        detail += f"；审批意见：{row.review_comment}"
+    svc.notify_user(
+        db,
+        target.user_id,
+        type=(
+            NotificationType.PERMISSION_APPROVED.value
+            if payload.approve
+            else NotificationType.PERMISSION_REJECTED.value
+        ),
+        title=title,
+        content=detail,
+        ref_type="permission_request",
+        ref_id=row.request_id,
+        actor_id=current.user_id,
+        actor_name=row.reviewer_name,
+    )
+    # 处理完的待办从审批人的红点里移走
+    reviewer = db.get(User, current.user_id)
+    if reviewer is not None:
+        svc.mark_related_read(db, reviewer, ref_type="permission_request", ref_id=row.request_id)
     db.commit()
     db.refresh(row)
     return ok({"request": _request_out(row), "granted": granted_now, "user": user_out(target, current)})

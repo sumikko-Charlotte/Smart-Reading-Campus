@@ -13,7 +13,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
-from app.core.enums import ACTIVITY_LEVEL_LABELS, ActivityLevel, ActivityStatus, CertificateStatus, SignupStatus
+from app.core.enums import (
+    ACTIVITY_LEVEL_LABELS,
+    ActivityLevel,
+    ActivityStatus,
+    CertificateStatus,
+    NotificationType,
+    SignupStatus,
+)
 from app.core.permissions import Permission
 from app.core.response import CODE_ILLEGAL_STATE, CODE_NOT_FOUND, BizError, ok, page_result
 from app.core.security import CurrentUser, get_current_user, get_optional_user, new_id, require_permissions
@@ -27,6 +34,7 @@ from app.schemas.certificate import (
 )
 from app.schemas.common import PageQuery
 from app.services import certificate_service
+from app.services import notification_service as svc
 
 router = APIRouter(tags=["电子证书"])
 
@@ -243,6 +251,17 @@ def issue_certificates(
         signup.certificate_no = cert.serial_no
         issued.append(cert)
         existing.add(student.user_id)
+        svc.notify_user(
+            db,
+            student.user_id,
+            type=NotificationType.CERTIFICATE_ISSUED.value,
+            title=f"你获得了活动证书：{activity.title}",
+            content=f"证书编号 {cert.serial_no}，可在「我的证书」查看并下载 PDF。",
+            ref_type="certificate",
+            ref_id=cert.certificate_id,
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
 
     db.commit()
     for cert in issued:

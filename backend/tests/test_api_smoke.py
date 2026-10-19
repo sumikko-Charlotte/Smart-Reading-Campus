@@ -18,6 +18,7 @@ from app.db.models import (  # noqa: E402
     ActivitySummary,
     Certificate,
     Notification,
+    NotificationRead,
     PermissionLog,
     PermissionRequest,
     User,
@@ -50,33 +51,68 @@ def cleanup() -> None:
     """清理测试产生的数据，保持演示库干净。"""
     db = SessionLocal()
     try:
-        # 按标题前缀兜底清理测试总结（含推送消息），避免历史残留污染演示
-        stray = db.scalars(select(ActivitySummary).where(ActivitySummary.title.like(f"{PREFIX}%"))).all()
-        for summary in stray:
-            db.execute(delete(Notification).where(Notification.ref_id == summary.summary_id))
-            db.delete(summary)
+        summary_ids = [
+            row.summary_id
+            for row in db.scalars(select(ActivitySummary).where(ActivitySummary.title.like(f"{PREFIX}%"))).all()
+        ]
         acts = db.scalars(select(Activity).where(Activity.title.like(f"{PREFIX}%"))).all()
-        if acts:
-            ids = [row.activity_id for row in acts]
-            for row in acts:
-                row.is_deleted = True
-            summaries = db.scalars(select(ActivitySummary).where(ActivitySummary.activity_id.in_(ids))).all()
-            for summary in summaries:
-                db.execute(delete(Notification).where(Notification.ref_id == summary.summary_id))
-            db.execute(delete(ActivitySummary).where(ActivitySummary.activity_id.in_(ids)))
-            db.execute(delete(ActivitySignup).where(ActivitySignup.activity_id.in_(ids)))
-            db.execute(delete(Certificate).where(Certificate.activity_id.in_(ids)))
+        act_ids = [row.activity_id for row in acts]
+        test_users = db.scalars(select(User).where(User.student_no.like("SMOKE%"))).all()
+        user_ids = [row.user_id for row in test_users]
+        # 申请单对应的待审批消息发给了系统管理员（user_id 不是测试账号），
+        # 必须按 ref_id 清，否则每跑一次就给管理员留一条孤儿待办
+        request_ids = (
+            [
+                row.request_id
+                for row in db.scalars(
+                    select(PermissionRequest).where(PermissionRequest.user_id.in_(user_ids))
+                ).all()
+            ]
+            if user_ids
+            else []
+        )
+
+        # 消息与已读回执：按 ref_id（总结 / 活动 / 申请单）和收件人两种口径一起清
+        notif_ids: set[str] = set()
+        if summary_ids:
+            notif_ids |= set(
+                db.scalars(select(Notification.notification_id).where(Notification.ref_id.in_(summary_ids))).all()
+            )
+        if act_ids:
+            notif_ids |= set(
+                db.scalars(select(Notification.notification_id).where(Notification.ref_id.in_(act_ids))).all()
+            )
+        if request_ids:
+            notif_ids |= set(
+                db.scalars(select(Notification.notification_id).where(Notification.ref_id.in_(request_ids))).all()
+            )
+        if user_ids:
+            notif_ids |= set(
+                db.scalars(select(Notification.notification_id).where(Notification.user_id.in_(user_ids))).all()
+            )
+        if notif_ids:
+            db.execute(delete(NotificationRead).where(NotificationRead.notification_id.in_(notif_ids)))
+            db.execute(delete(Notification).where(Notification.notification_id.in_(notif_ids)))
+
+        if summary_ids:
+            db.execute(delete(ActivitySummary).where(ActivitySummary.summary_id.in_(summary_ids)))
+        if act_ids:
+            db.execute(delete(ActivitySummary).where(ActivitySummary.activity_id.in_(act_ids)))
+            db.execute(delete(ActivitySignup).where(ActivitySignup.activity_id.in_(act_ids)))
+            db.execute(delete(Certificate).where(Certificate.activity_id.in_(act_ids)))
+            # 物理删除：以前只标 is_deleted，跑一轮攒一批，演示库会越来越脏
+            db.execute(delete(Activity).where(Activity.activity_id.in_(act_ids)))
+
         db.execute(delete(PermissionLog).where(PermissionLog.remark.like(f"{PREFIX}%")))
 
-        # 注册测试账号（SMOKE 前缀）连同申请单、日志一起清理，保证下次可重复注册
-        test_users = db.scalars(select(User).where(User.student_no.like("SMOKE%"))).all()
-        if test_users:
-            uids = [row.user_id for row in test_users]
-            db.execute(delete(PermissionRequest).where(PermissionRequest.user_id.in_(uids)))
-            db.execute(delete(PermissionLog).where(PermissionLog.target_user_id.in_(uids)))
-            db.execute(delete(PermissionLog).where(PermissionLog.operator_id.in_(uids)))
-            for row in test_users:
-                db.delete(row)
+        # 注册测试账号（SMOKE 前缀）连同申请单、日志、消息一起清理，保证下次可重复注册
+        if user_ids:
+            db.execute(delete(PermissionRequest).where(PermissionRequest.user_id.in_(user_ids)))
+            db.execute(delete(PermissionLog).where(PermissionLog.target_user_id.in_(user_ids)))
+            db.execute(delete(PermissionLog).where(PermissionLog.operator_id.in_(user_ids)))
+            db.execute(delete(NotificationRead).where(NotificationRead.user_id.in_(user_ids)))
+            db.execute(delete(ActivitySignup).where(ActivitySignup.user_id.in_(user_ids)))
+            db.execute(delete(User).where(User.user_id.in_(user_ids)))
         db.commit()
     finally:
         db.close()
@@ -375,6 +411,63 @@ def main() -> None:
                                    headers=auth(stu_token)), 0, "撤回")
     assert cancelled["data"]["status"] == "cancelled"
     print("  ✅ 申请→仅系统管理员可见→审批即时授予→驳回不授权→可撤回")
+
+    print("=== 10. 站内消息与未读数 ===")
+
+    def unread(headers: dict) -> int:
+        return expect(client.get("/api/v1/notifications/unread-count", headers=headers), 0, "未读数")["data"]["count"]
+
+    def message_list(headers: dict) -> dict:
+        return expect(
+            client.get("/api/v1/notifications", headers=headers, params={"page": 1, "page_size": 50}),
+            0,
+            "消息列表",
+        )["data"]
+
+    base_super, base_stu = unread(auth(tokens["super"])), unread(auth(stu_token))
+    req4 = expect(
+        client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                    json={"permissions": ["book:manage"], "reason": f"{PREFIX}消息链路测试"}),
+        0,
+        "消息测试申请",
+    )
+    rid4 = req4["data"]["request_id"]
+    assert unread(auth(tokens["super"])) == base_super + 1, "管理员应收到待审批消息"
+    assert unread(auth(stu_token)) == base_stu, "发给管理员的消息不应增加申请人未读"
+
+    expect(client.post(f"/api/v1/permission-requests/{rid4}/review", headers=auth(tokens["super"]),
+                       json={"approve": True, "comment": f"{PREFIX}同意"}), 0, "消息测试审批")
+    assert unread(auth(tokens["super"])) == base_super, "审批后待办消息应自动已读"
+    assert unread(auth(stu_token)) == base_stu + 1, "申请人应收到审批结果"
+
+    msgs = message_list(auth(stu_token))
+    hit = [row for row in msgs["list"] if row["ref_id"] == rid4]
+    assert hit and hit[0]["type"] == "permission_approved" and hit[0]["is_read"] is False
+    assert msgs["unread"] == base_stu + 1
+
+    read1 = expect(
+        client.post(f"/api/v1/notifications/{hit[0]['notification_id']}/read", headers=auth(stu_token)),
+        0,
+        "单条已读",
+    )
+    assert read1["data"]["changed"] == 1
+    assert unread(auth(stu_token)) == base_stu
+
+    all_read = expect(client.post("/api/v1/notifications/read-all", headers=auth(stu_token)), 0, "全部已读")
+    assert all_read["data"]["unread"] == 0
+    again = expect(client.post("/api/v1/notifications/read-all", headers=auth(stu_token)), 0, "重复全部已读")
+    assert again["data"]["changed"] == 0
+
+    # 越权：学生标记管理员的消息不生效
+    super_unread = [row for row in message_list(auth(tokens["super"]))["list"] if not row["is_read"]]
+    if super_unread:
+        foreign = expect(
+            client.post(f"/api/v1/notifications/{super_unread[0]['notification_id']}/read", headers=auth(stu_token)),
+            0,
+            "越权标记他人消息",
+        )
+        assert foreign["data"]["changed"] == 0
+    print("  ✅ 待办通知/审批结果/未读数增减/单条与全部已读/越权保护均正确")
 
     print("\n冒烟测试全部通过 ✅")
 

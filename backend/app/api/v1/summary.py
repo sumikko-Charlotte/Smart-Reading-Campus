@@ -13,14 +13,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
-from app.core.enums import ActivityStatus, NotificationType, SummaryStatus
+from app.core.enums import ActivityStatus, NotificationType, SummaryStatus, UserRole
 from app.core.permissions import ROLE_LABELS, Permission
 from app.core.response import CODE_FORBIDDEN, CODE_ILLEGAL_STATE, CODE_NOT_FOUND, CODE_PARAM_ERROR, BizError, ok, page_result
 from app.core.security import CurrentUser, get_current_user, new_id, require_permissions
 from app.db.base import get_db
-from app.db.models import Activity, ActivitySummary, Notification, User
+from app.db.models import Activity, ActivitySummary, User
 from app.schemas.common import PageQuery
-from app.schemas.summary import NotificationOut, SummaryOut, SummaryPublishRequest, SummaryUpsertRequest
+from app.schemas.summary import SummaryOut, SummaryPublishRequest, SummaryUpsertRequest
+from app.services import notification_service as svc
 
 router = APIRouter(tags=["活动总结与推送"])
 
@@ -132,22 +133,55 @@ def publish_summary(
 
     row.status = SummaryStatus.PUBLISHED.value
     row.published_at = datetime.now(timezone.utc)
-    db.add(
-        Notification(
-            notification_id=new_id("notification"),
+
+    # 推送给「参加过这场活动的人」——这是「你参加的活动发了总结」的来源。
+    # 没有报名记录时（例如纯展览类活动）退化为按所选角色广播，避免无人收到。
+    audience = svc.activity_signup_user_ids(db, row.activity_id)
+    pushed: list[str] = []
+    if audience:
+        svc.notify_users(
+            db,
+            audience,
+            type=NotificationType.ACTIVITY_SUMMARY.value,
+            title=f"你参加的活动发布了回顾：{row.title}",
+            content=row.content[:200],
+            ref_type="activity_summary",
+            ref_id=row.summary_id,
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
+        pushed.append(f"{len(audience)} 位报名者")
+    if not audience:
+        svc.notify(
+            db,
             type=NotificationType.ACTIVITY_SUMMARY.value,
             title=f"活动回顾：{row.title}",
             content=row.content[:200],
             ref_type="activity_summary",
             ref_id=row.summary_id,
             target_roles=targets,
-            created_by=current.user_id,
-            created_by_name=current.name,
+            actor_id=current.user_id,
+            actor_name=current.name,
         )
-    )
+        pushed.extend(targets)
+    elif UserRole.VISITOR.value in targets:
+        # 访客没有报名关系，只能按角色广播
+        svc.notify(
+            db,
+            type=NotificationType.ACTIVITY_SUMMARY.value,
+            title=f"活动回顾：{row.title}",
+            content=row.content[:200],
+            ref_type="activity_summary",
+            ref_id=row.summary_id,
+            target_roles=[UserRole.VISITOR.value],
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
+        pushed.append(UserRole.VISITOR.value)
+
     db.commit()
     db.refresh(row)
-    return ok({"summary": _summary_out(row), "pushed_to": targets})
+    return ok({"summary": _summary_out(row), "pushed_to": pushed})
 
 
 @router.get("/summaries", summary="活动总结列表（全站可见，含访客）")
@@ -172,24 +206,3 @@ def list_summaries(
         .limit(pq.page_size)
     ).all()
     return ok(page_result([_summary_out(r) for r in rows], pq.page, pq.page_size, total))
-
-
-@router.get("/notifications", summary="我的推送消息（按当前角色过滤）")
-def list_notifications(
-    pq: PageQuery = Depends(page_query),
-    current: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # target_roles 是 JSON 数组，SQLite 下用 Python 过滤；量级上来后改关联表或 PG 的 JSONB
-    rows = db.scalars(
-        select(Notification)
-        .where(Notification.is_deleted.is_(False))
-        .order_by(Notification.created_at.desc())
-        .limit(500)
-    ).all()
-    mine = [r for r in rows if current.role in (r.target_roles or [])]
-    total = len(mine)
-    start = (pq.page - 1) * pq.page_size
-    page_rows = mine[start : start + pq.page_size]
-    items = [NotificationOut.model_validate(r).model_dump() for r in page_rows]
-    return ok(page_result(items, pq.page, pq.page_size, total))

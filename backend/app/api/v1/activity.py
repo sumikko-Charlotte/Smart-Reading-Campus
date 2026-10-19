@@ -26,6 +26,7 @@ from app.core.enums import (
     ACTIVITY_STATUS_TRANSITIONS,
     ActivityLevel,
     ActivityStatus,
+    NotificationType,
     SignupStatus,
 )
 from app.core.permissions import Permission
@@ -54,6 +55,7 @@ from app.schemas.activity import (
 )
 from app.schemas.common import PageQuery
 from app.services import llm_service
+from app.services import notification_service as svc
 
 router = APIRouter(prefix="/activities", tags=["活动管理"])
 
@@ -237,6 +239,19 @@ def submit_activity(
     row.status = ActivityStatus.PENDING_REVIEW.value
     row.submitted_at = datetime.now(timezone.utc)
     row.review_comment = ""
+    # 待办式通知：谁有审批权谁收到，且踢掉申请人自己（他有审批权也不能自审）
+    svc.notify_permission_holders(
+        db,
+        Permission.ACTIVITY_REVIEW.value,
+        exclude_user_id=current.user_id,
+        type=NotificationType.ACTIVITY_REVIEW.value,
+        title=f"待审批活动：{row.title}",
+        content=f"{current.name or row.organizer_name} 提交了活动申办，请审批并定级（校级/院级）。",
+        ref_type="activity",
+        ref_id=row.activity_id,
+        actor_id=current.user_id,
+        actor_name=current.name,
+    )
     db.commit()
     db.refresh(row)
     return ok(_to_out(row, current), message="已提交审批")
@@ -274,6 +289,36 @@ def review_activity(
     else:
         row.status = ActivityStatus.REJECTED.value
         message = "已驳回，申办人可修改后重新提交"
+
+    # 审批结果直达申办人
+    if row.organizer_id:
+        if payload.approved:
+            title = f"你申办的活动已通过审批：{row.title}"
+            detail = f"定级：{ACTIVITY_LEVEL_LABELS.get(row.level, row.level)}，活动已发布，可开始接受报名。"
+        else:
+            title = f"你申办的活动被驳回：{row.title}"
+            detail = "可按审批意见修改后重新提交。"
+        if payload.comment:
+            detail += f" 审批意见：{payload.comment}"
+        svc.notify_user(
+            db,
+            row.organizer_id,
+            type=(
+                NotificationType.ACTIVITY_PUBLISHED.value
+                if payload.approved
+                else NotificationType.ACTIVITY_REJECTED.value
+            ),
+            title=title,
+            content=detail,
+            ref_type="activity",
+            ref_id=row.activity_id,
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
+    # 审批完的待办从审批人自己的红点里移除
+    reviewer = db.get(User, current.user_id)
+    if reviewer is not None:
+        svc.mark_related_read(db, reviewer, ref_type="activity", ref_id=row.activity_id)
     db.commit()
     db.refresh(row)
     return ok(_to_out(row, current), message=message)
@@ -472,6 +517,38 @@ def change_status(
             f"「{ACTIVITY_STATUS_LABELS.get(payload.target_status, payload.target_status)}」，可流转：{allow_text}",
         )
     row.status = payload.target_status
+    # 报名者关心的是「报名截止 / 开始 / 结束 / 取消」，草稿态流转不必打扰
+    if payload.target_status in {
+        ActivityStatus.SIGNUP_CLOSED.value,
+        ActivityStatus.ONGOING.value,
+        ActivityStatus.FINISHED.value,
+        ActivityStatus.CANCELLED.value,
+    }:
+        status_text = ACTIVITY_STATUS_LABELS.get(payload.target_status, payload.target_status)
+        cancelled = payload.target_status == ActivityStatus.CANCELLED.value
+        svc.notify_activity_signups(
+            db,
+            row.activity_id,
+            type=(
+                NotificationType.ACTIVITY_CANCELLED.value
+                if cancelled
+                else NotificationType.ACTIVITY_STATUS.value
+            ),
+            title=(
+                f"你报名的活动已取消：{row.title}"
+                if cancelled
+                else f"你报名的活动状态更新：{row.title}"
+            ),
+            content=(
+                "很抱歉，活动因故取消，请留意后续安排。"
+                if cancelled
+                else f"当前状态：{status_text}。"
+            ),
+            ref_type="activity",
+            ref_id=row.activity_id,
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
     db.commit()
     db.refresh(row)
     return ok(_to_out(row, current))

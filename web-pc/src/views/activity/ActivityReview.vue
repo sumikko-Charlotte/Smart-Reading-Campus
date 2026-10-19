@@ -165,6 +165,8 @@ async function onReview() {
     ElMessage.success(data.status === 'published' ? `已定为「${labelOf(ACTIVITY_LEVEL, data.level)}」并发布` : '已驳回')
     dialog.visible = false
     fetchList()
+    // 待审批通知已在后端标为已读，这里让顶栏红点立即重算
+    window.dispatchEvent(new Event('notify:refresh'))
   } finally {
     submitting.value = false
   }

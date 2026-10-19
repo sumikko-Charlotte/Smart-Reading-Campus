@@ -1,12 +1,15 @@
 /** 登录态、当前用户与权限判断 */
 import { defineStore } from 'pinia'
 import * as userApi from '@/api/user'
+import * as notificationApi from '@/api/notification'
 import { getToken, setToken } from '@/api/request'
 
 export const useUserStore = defineStore('user', {
   state: () => ({
     token: getToken(),
-    profile: null
+    profile: null,
+    // 顶栏红点：唯一数据源是 /notifications/unread-count，登录后由布局轮询刷新
+    unread: 0
   }),
   getters: {
     isLoggedIn: (state) => Boolean(state.token),
@@ -57,9 +60,28 @@ export const useUserStore = defineStore('user', {
       this.profile = await userApi.getProfile()
       return this.profile
     },
+    /** 刷新未读数；失败时保留旧值，避免网络抖动把红点清空 */
+    async refreshUnread() {
+      if (!this.token) {
+        this.unread = 0
+        return 0
+      }
+      try {
+        const data = await notificationApi.getUnreadCount()
+        this.unread = data.count ?? 0
+        return this.unread
+      } catch {
+        return this.unread
+      }
+    },
+    /** 消息页标记已读后直接同步红点，不必等下一次轮询 */
+    setUnread(count) {
+      this.unread = Math.max(0, Number(count) || 0)
+    },
     logout() {
       this.token = ''
       this.profile = null
+      this.unread = 0
       setToken('')
     }
   }

@@ -230,7 +230,13 @@ class ActivitySummary(Base, TimestampMixin):
 
 
 class Notification(Base, TimestampMixin):
-    """站内推送：target_roles 决定哪些角色能看到（访客也在此列）。"""
+    """站内推送。
+
+    两种投递方式：
+    - 定向：`user_id` 非空，只有该用户能看到（审批结果、权限变更、证书等「你的事」）；
+    - 广播：`user_id` 为空，按 `target_roles` 过滤（全站公告类，访客也在其中）。
+    已读状态存在 notification_reads，广播消息一人一条已读记录，不复制正文。
+    """
 
     __tablename__ = "notifications"
 
@@ -240,9 +246,23 @@ class Notification(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(Text, default="")
     ref_type: Mapped[str] = mapped_column(String(24), default="")
     ref_id: Mapped[str] = mapped_column(String(24), default="")
+    # 定向接收人；空字符串表示按角色广播
+    user_id: Mapped[str] = mapped_column(String(24), default="", server_default="", index=True)
     target_roles: Mapped[list] = mapped_column(JSON, default=list)
     created_by: Mapped[str] = mapped_column(String(24), default="")
     created_by_name: Mapped[str] = mapped_column(String(64), default="")
+
+
+class NotificationRead(Base):
+    """消息已读回执：一个用户对一条消息最多一条记录。"""
+
+    __tablename__ = "notification_reads"
+    __table_args__ = (UniqueConstraint("notification_id", "user_id", name="uq_notification_read"),)
+
+    read_id: Mapped[str] = _id("notification_read")
+    notification_id: Mapped[str] = mapped_column(String(24), index=True)
+    user_id: Mapped[str] = mapped_column(String(24), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class PermissionLog(Base, TimestampMixin):

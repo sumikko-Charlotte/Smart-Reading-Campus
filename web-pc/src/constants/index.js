@@ -101,7 +101,15 @@ export const CERT_STATUS = [
 export const NOTIFICATION_TYPE = [
   { value: 'activity_summary', label: '活动回顾', type: 'success' },
   { value: 'activity_published', label: '活动发布', type: 'primary' },
+  { value: 'activity_rejected', label: '活动驳回', type: 'danger' },
+  { value: 'activity_cancelled', label: '活动取消', type: 'danger' },
+  { value: 'activity_review', label: '待审批活动', type: 'warning' },
+  { value: 'activity_status', label: '活动状态', type: 'info' },
   { value: 'certificate_issued', label: '证书颁发', type: 'warning' },
+  { value: 'permission_request', label: '待审批权限', type: 'warning' },
+  { value: 'permission_approved', label: '权限通过', type: 'success' },
+  { value: 'permission_rejected', label: '权限驳回', type: 'danger' },
+  { value: 'permission_changed', label: '权限调整', type: 'info' },
   { value: 'system', label: '系统消息', type: 'info' }
 ]
 

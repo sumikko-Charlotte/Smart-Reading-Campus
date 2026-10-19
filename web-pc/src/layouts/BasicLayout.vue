@@ -39,9 +39,11 @@
             </el-tag>
           </el-tooltip>
 
-          <el-badge :value="unread" :hidden="!unread" :max="99">
-            <el-button text :icon="Bell" @click="$router.push('/notifications')">消息</el-button>
-          </el-badge>
+          <el-tooltip :content="unread ? `${unread} 条未读消息` : '消息中心'" placement="bottom">
+            <el-badge :value="unread" :hidden="!unread" :max="99" class="msg-badge">
+              <el-button text :icon="Bell" @click="$router.push('/notifications')">消息</el-button>
+            </el-badge>
+          </el-tooltip>
 
           <el-dropdown @command="onCommand">
             <span class="user-info">
@@ -82,20 +84,21 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { Bell } from '@element-plus/icons-vue'
 import { useUserStore } from '@/store/user'
 import { health } from '@/api/user'
-import { listNotifications } from '@/api/summary'
 import { PERM, USER_ROLE, typeOf } from '@/constants'
 
 const route = useRoute()
 const router = useRouter()
 const store = useUserStore()
 const healthOk = ref(false)
-const unread = ref(0)
+// 未读数统一放在 store，消息页标记已读后可以直接回写，不必等轮询
+const unread = computed(() => store.unread)
+let unreadTimer = null
 
 const menus = [
   { path: '/dashboard', title: '首页概览', icon: 'Odometer', permission: PERM.ACTIVITY_VIEW },
@@ -117,6 +120,21 @@ const activeMenu = computed(() => route.meta.activeMenu || route.path)
 const roleType = computed(() => typeOf(USER_ROLE, store.role))
 const permissionCount = computed(() => store.permissions.length)
 
+/**
+ * 红点刷新策略（三条路一起兜）：
+ * 1. 每 10 秒轮询一次，覆盖「别人那边产生了给我的消息」；
+ * 2. 切页时刷新一次，避免刚审批完还显示旧数字；
+ * 3. 页面内操作后派发 notify:refresh 立即拉取，做到「点完就变」。
+ * 标签页切回前台也补一次，笔记本合盖回来不会停在旧状态。
+ */
+function refreshUnread() {
+  if (store.isLoggedIn && document.visibilityState !== 'hidden') store.refreshUnread()
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') refreshUnread()
+}
+
 onMounted(async () => {
   try {
     await health()
@@ -124,13 +142,19 @@ onMounted(async () => {
   } catch {
     healthOk.value = false
   }
-  try {
-    const data = await listNotifications({ page: 1, page_size: 5 })
-    unread.value = data.total
-  } catch {
-    unread.value = 0
-  }
+  await store.refreshUnread()
+  unreadTimer = setInterval(refreshUnread, 10000)
+  window.addEventListener('notify:refresh', refreshUnread)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
+
+onUnmounted(() => {
+  if (unreadTimer) clearInterval(unreadTimer)
+  window.removeEventListener('notify:refresh', refreshUnread)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
+
+watch(() => route.fullPath, refreshUnread)
 
 async function onCommand(command) {
   if (command === 'profile') {

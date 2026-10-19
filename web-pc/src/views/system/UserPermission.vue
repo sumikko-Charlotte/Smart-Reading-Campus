@@ -329,6 +329,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import {
@@ -347,7 +348,9 @@ import { USER_ROLE, typeOf } from '@/constants'
 import { formatDateTime } from '@/utils/format'
 
 const store = useUserStore()
-const activeTab = ref('users')
+const route = useRoute()
+// 从消息中心点「待审批权限」直接落到申请页签
+const activeTab = ref(route.query.tab === 'requests' ? 'requests' : 'users')
 const loading = ref(false)
 const logsLoading = ref(false)
 const users = ref([])
@@ -460,6 +463,8 @@ async function submitReview() {
     }
     reviewDialog.visible = false
     await Promise.all([fetchRequests(), fetchRequestSummary(), fetchUsers(), fetchLogs()])
+    // 待办处理完，通知顶栏红点立即重算，不用等 10 秒轮询
+    window.dispatchEvent(new Event('notify:refresh'))
   } finally {
     reviewDialog.saving = false
   }

@@ -42,6 +42,15 @@ class NotificationOut(ORMModel):
     content: str
     ref_type: str
     ref_id: str
+    # 定向消息有值，广播消息为空
+    user_id: str = ""
     target_roles: list[str] = Field(default_factory=list)
     created_by_name: str
     created_at: datetime
+    # 由接口按当前用户补上，不在库里存
+    is_read: bool = False
+    scope: str = "role"
+
+
+class NotificationReadRequest(RequestModel):
+    notification_ids: list[str] = Field(default_factory=list, description="留空表示全部标记已读")

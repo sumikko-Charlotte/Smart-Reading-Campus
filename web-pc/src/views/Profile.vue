@@ -297,7 +297,8 @@ const REQUEST_STATUS = [
 
 const store = useUserStore()
 const route = useRoute()
-const activeTab = ref(route.query.tab === 'permissions' ? 'permissions' : 'info')
+const TAB_KEYS = ['info', 'permissions', 'requests', 'security']
+const activeTab = ref(TAB_KEYS.includes(route.query.tab) ? route.query.tab : 'info')
 const infoRef = ref()
 const pwdRef = ref()
 const savingInfo = ref(false)

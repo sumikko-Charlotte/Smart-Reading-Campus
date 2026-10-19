@@ -36,7 +36,7 @@ from app.core.enums import (  # noqa: E402
     SummaryStatus,
     UserRole,
 )
-from app.core.permissions import Permission  # noqa: E402
+from app.core.permissions import PERMISSION_CATALOG, Permission  # noqa: E402
 from app.core.security import new_id  # noqa: E402
 from app.db.base import Base, SessionLocal, engine, init_db  # noqa: E402
 from app.db.models import (  # noqa: E402
@@ -446,29 +446,60 @@ def main() -> None:
             )
 
         # 权限申请演示：两条待审批，系统管理员登录即可在「用户与权限 → 权限申请」看到
+        names = {item["code"]: item["name"] for item in PERMISSION_CATALOG}
         if db.scalar(select(PermissionRequest).limit(1)) is None:
-            db.add(
-                PermissionRequest(
-                    request_id=new_id("permission_request"),
-                    user_id=users["2025211994"].user_id,
-                    user_name=users["2025211994"].name,
-                    student_no=users["2025211994"].student_no,
-                    user_role=UserRole.STUDENT.value,
-                    permissions=[Permission.ACTIVITY_SUMMARY.value],
-                    reason="学生会本学期要办两场读书分享会，结束后需要发布图文总结并推送给同学。",
-                    status=PermissionRequestStatus.PENDING.value,
+            demo_requests = [
+                (
+                    users["2025211994"],
+                    [Permission.ACTIVITY_SUMMARY.value],
+                    "学生会本学期要办两场读书分享会，结束后需要发布图文总结并推送给同学。",
+                ),
+                (
+                    users["2025211996"],
+                    [Permission.ACTIVITY_CREATE.value, Permission.ACTIVITY_SUMMARY.value],
+                    "想和室友一起办一次旧书交换活动，需要申办活动并发布活动总结。",
+                ),
+            ]
+            for applicant, codes, reason in demo_requests:
+                db.add(
+                    PermissionRequest(
+                        request_id=new_id("permission_request"),
+                        user_id=applicant.user_id,
+                        user_name=applicant.name,
+                        student_no=applicant.student_no,
+                        user_role=UserRole.STUDENT.value,
+                        permissions=codes,
+                        reason=reason,
+                        status=PermissionRequestStatus.PENDING.value,
+                    )
+                )
+
+        # 待审批消息按申请单补齐（幂等）：已有申请的库也能补出消息，消息中心开箱有内容
+        db.flush()
+        pending_rows = db.scalars(
+            select(PermissionRequest).where(PermissionRequest.status == PermissionRequestStatus.PENDING.value)
+        ).all()
+        for request in pending_rows:
+            exists = db.scalar(
+                select(Notification).where(
+                    Notification.ref_type == "permission_request",
+                    Notification.ref_id == request.request_id,
                 )
             )
+            if exists is not None:
+                continue
             db.add(
-                PermissionRequest(
-                    request_id=new_id("permission_request"),
-                    user_id=users["2025211996"].user_id,
-                    user_name=users["2025211996"].name,
-                    student_no=users["2025211996"].student_no,
-                    user_role=UserRole.STUDENT.value,
-                    permissions=[Permission.ACTIVITY_CREATE.value, Permission.ACTIVITY_SUMMARY.value],
-                    reason="想和室友一起办一次旧书交换活动，需要申办活动并发布活动总结。",
-                    status=PermissionRequestStatus.PENDING.value,
+                Notification(
+                    notification_id=new_id("notification"),
+                    type=NotificationType.PERMISSION_REQUEST.value,
+                    title=f"{request.user_name} 申请权限：{'、'.join(names.get(c, c) for c in (request.permissions or []))}",
+                    content=request.reason,
+                    ref_type="permission_request",
+                    ref_id=request.request_id,
+                    user_id=users["admin"].user_id,
+                    target_roles=[],
+                    created_by=request.user_id,
+                    created_by_name=request.user_name,
                 )
             )
 
