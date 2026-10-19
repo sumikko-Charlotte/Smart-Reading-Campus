@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-chat"
     LLM_API_BASE: str = "https://api.deepseek.com/v1"
     LLM_API_KEY: str = ""
-    LLM_MAX_TOKENS: int = 1024
+    # 单次回复的 token 上限：录书场景要输出完整书目 JSON，1024 会被截断导致解析失败
+    LLM_MAX_TOKENS: int = 2048
     PROMPT_VERSION: str = "v1.0"
     # 智能体运行时：超时、重试写在这里，避免散落在各处
     LLM_TIMEOUT_SEC: float = 45.0
@@ -59,7 +60,8 @@ class Settings(BaseSettings):
     # 智能体单次运行最多几步工具调用；步数越多越慢越贵，4 步覆盖本项目所有场景
     AGENT_MAX_STEPS: int = 4
     # 单次运行的 token 预算，超出即停止并输出已有结论
-    AGENT_TOKEN_BUDGET: int = 6000
+    # 4 步工具调用的累计开销约 8~14k（每步都要重发历史），6000 会让「查到了却被迫降级」
+    AGENT_TOKEN_BUDGET: int = 24000
     # 是否允许工具调用；关掉后所有场景退回单轮生成（仍可用，只是不再自己查库）
     AGENT_TOOLS_ENABLED: bool = True
 

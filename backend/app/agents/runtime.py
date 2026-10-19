@@ -39,6 +39,18 @@ TEXT_PROTOCOL_HINT = """
 {"action": "final", "answer": "给用户的答复"}
 """
 
+# 需要结构化输出的场景（录书）：模型常把业务 JSON 塞进 answer 字段，
+# 甚至返回空的 {"action":"final","answer":""}，导致上层拿不到字段而误判降级。
+# 这类场景去掉「final 包一层」的约定，直接要求输出业务 JSON。
+TEXT_PROTOCOL_HINT_JSON = """
+
+【工具调用约定】
+你可以调用下列工具来获取真实数据，不要凭空编造书目、库存和活动信息。
+需要调用工具时，只输出一行 JSON，不要输出别的：
+{"action": "工具名", "args": {"参数名": "值"}}
+已经能回答时，不要再调用工具，直接输出系统提示中要求的那一个 JSON 对象（不要包在 action/answer 里，不要代码块标记）。
+"""
+
 
 @dataclass
 class AgentResult:
@@ -95,8 +107,9 @@ def run(
     started = time.perf_counter()
     steps_limit = max_steps or settings.AGENT_MAX_STEPS
     schemas = tool_registry.schemas_for(scene) if settings.AGENT_TOOLS_ENABLED else []
+    hint = TEXT_PROTOCOL_HINT_JSON if expect_json else TEXT_PROTOCOL_HINT
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt + (TEXT_PROTOCOL_HINT if schemas else "")},
+        {"role": "system", "content": system_prompt + (hint if schemas else "")},
         {"role": "user", "content": user_message},
     ]
 
@@ -143,8 +156,18 @@ def run(
         if action and isinstance(action.get("action"), str) and not last_chance:
             name = action["action"]
             if name == "final":
-                final_text = str(action.get("answer") or "").strip()
-                break
+                answer = str(action.get("answer") or "").strip()
+                # 模型有时会返回 {"action":"final","answer":""}：这不是终点，
+                # 当成终点会让上层拿到空结果并误判为「模型没给出书名」。
+                # 补一句催促后继续跑，让它在剩余步数里把结构化结果补齐。
+                if answer:
+                    final_text = answer
+                    break
+                messages.append({"role": "assistant", "content": text})
+                messages.append(
+                    {"role": "user", "content": "答复不能为空：请按输出要求给出完整结果（JSON 对象），不要解释也不要代码块标记。"}
+                )
+                continue
             if name in tool_registry.REGISTRY:
                 args = action.get("args") if isinstance(action.get("args"), dict) else {}
                 payload = tool_registry.dispatch(name, args, ctx)
@@ -169,6 +192,26 @@ def run(
         # ---- 情况三：就是最终答复 ----
         final_text = text.strip()
         break
+
+    # 收网补救：走到步数上限仍没给出答案、解析不出 JSON，或只拿到协议外壳
+    # （{"action":...,"answer":...} 不是业务结果），再要一次纯结构化输出。
+    # 只多花一次调用的钱，换来「不要因为模型少说一句话就整条降级」。
+    parsed = _try_json(final_text) if expect_json else {}
+    envelope_only = bool(parsed) and set(parsed.keys()) <= {"action", "answer", "args"}
+    empty_result = expect_json and (not parsed or envelope_only)
+    if not final_text or empty_result:
+        try:
+            messages.append({"role": "assistant", "content": final_text or "（上一步未给出内容）"})
+            messages.append(
+                {"role": "user", "content": "请只输出符合前述输出要求的 JSON 对象，不要解释、不要代码块标记，不要留空。"}
+            )
+            rescue = llm_client.chat(messages, tools=None)
+            tokens_used += rescue.tokens
+            text = (rescue.content or "").strip()
+            if text:
+                final_text = text
+        except LLMError:
+            pass
 
     result.content = final_text
     result.tokens = tokens_used
