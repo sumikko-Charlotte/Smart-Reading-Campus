@@ -1,4 +1,16 @@
-"""活动管理：CRUD + 状态机流转 + AI 推文生成（对应 PC 端活动管理后台）。"""
+"""活动：申办 → 提交审批 → 审批定级 → 发布 → 运营 → 总结。
+
+权限口径（第二阶段）
+--------------------
+| 动作 | 权限点 | 默认拥有 |
+|---|---|---|
+| 浏览 | activity:view | 全部角色（含访客） |
+| 报名 | activity:signup | 学生、管理员 |
+| 申办/管理自己申办的活动 | activity:create | 管理员；学生按需授予 |
+| 管理全部活动 | activity:manage_all | 管理员 |
+| 审批/定级 | activity:review | 管理员（可被系统管理员收回） |
+| 写总结 | activity:summary | 管理员；主办方亦可 |
+"""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -8,13 +20,17 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.core.enums import (
+    ACTIVITY_LEVEL_LABELS,
+    ACTIVITY_PUBLIC_STATUSES,
     ACTIVITY_STATUS_LABELS,
     ACTIVITY_STATUS_TRANSITIONS,
+    ActivityLevel,
     ActivityStatus,
     SignupStatus,
-    UserRole,
 )
+from app.core.permissions import Permission
 from app.core.response import (
+    CODE_FORBIDDEN,
     CODE_ILLEGAL_STATE,
     CODE_NOT_FOUND,
     CODE_PARAM_ERROR,
@@ -22,17 +38,19 @@ from app.core.response import (
     ok,
     page_result,
 )
-from app.core.security import CurrentUser, get_current_user, new_id, require_roles
+from app.core.security import CurrentUser, get_current_user, get_optional_user, new_id, require_permissions
 from app.db.base import get_db
 from app.db.models import Activity, ActivitySignup, AIConversation, User
 from app.schemas.activity import (
     ActivityCreate,
-    EmptyPayload,
     ActivityOut,
+    ActivityReviewRequest,
     ActivitySignupOut,
     ActivitySignupView,
     ActivityStatusChange,
+    ActivitySubmitRequest,
     ActivityUpdate,
+    EmptyPayload,
 )
 from app.schemas.common import PageQuery
 from app.services import llm_service
@@ -49,13 +67,17 @@ def _as_utc(value: datetime) -> datetime:
 PUBLIC_FIELDS = {
     "activity_id", "title", "subtitle", "category", "cover_url", "summary", "content", "location",
     "organizer_name", "signup_start_at", "signup_end_at", "start_at", "end_at", "capacity",
-    "signup_count", "status", "need_certificate",
+    "signup_count", "status", "level", "need_certificate",
 }
+
+
+def _is_staff_viewer(viewer: CurrentUser | None) -> bool:
+    return viewer is not None and viewer.can(Permission.ACTIVITY_MANAGE_ALL.value)
 
 
 def _to_out(row: Activity, viewer: CurrentUser | None = None) -> dict:
     data = ActivityOut.model_validate(row).model_dump()
-    if viewer is None or viewer.role not in (UserRole.LIBRARIAN.value, UserRole.ADMIN.value):
+    if not _is_staff_viewer(viewer):
         return {key: value for key, value in data.items() if key in PUBLIC_FIELDS}
     return data
 
@@ -67,31 +89,52 @@ def _get_or_404(db: Session, activity_id: str) -> Activity:
     return row
 
 
+def _can_manage(current: CurrentUser, row: Activity) -> bool:
+    if current.can(Permission.ACTIVITY_MANAGE_ALL.value):
+        return True
+    return row.organizer_id == current.user_id and current.can(Permission.ACTIVITY_CREATE.value)
+
+
+def _require_manage(current: CurrentUser, row: Activity) -> None:
+    if not _can_manage(current, row):
+        raise BizError(CODE_FORBIDDEN, "只能管理自己申办的活动", http_status=403)
+
+
 def _validate_publishable(row: Activity) -> None:
-    """发布前校验：对应规范 7.2 第 2 条与 7.5 节的发布约定。"""
+    """提交/发布前的数据校验。"""
     signup_deadline = row.signup_end_at or row.start_at
-    if row.signup_start_at is not None and row.signup_start_at >= signup_deadline:
+    if row.signup_start_at is not None and _as_utc(row.signup_start_at) >= _as_utc(signup_deadline):
         raise BizError(CODE_PARAM_ERROR, "报名开始时间必须早于报名截止时间")
-    if row.end_at is not None and row.end_at <= row.start_at:
+    if row.end_at is not None and _as_utc(row.end_at) <= _as_utc(row.start_at):
         raise BizError(CODE_PARAM_ERROR, "活动结束时间必须晚于开始时间")
     if row.capacity < 0:
         raise BizError(CODE_PARAM_ERROR, "capacity 必须为非负整数")
-    if row.need_certificate and not row.certificate_template_id:
-        raise BizError(CODE_PARAM_ERROR, "需要证书的活动必须指定 certificate_template_id")
 
 
-@router.get("", summary="活动列表（分页 + 状态/分类筛选）")
+@router.get("", summary="活动列表（访客可读；自动按权限过滤可见范围）")
 def list_activities(
     pq: PageQuery = Depends(page_query),
-    status: str = Query(default="", description="draft/published/signup_closed/ongoing/finished/cancelled"),
+    status: str = Query(default="", description="draft/pending_review/rejected/published/signup_closed/ongoing/finished/cancelled"),
     category: str = Query(default=""),
-    current: CurrentUser = Depends(get_current_user),
+    level: str = Query(default="", description="school / college"),
+    current: CurrentUser = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     stmt = select(Activity).where(Activity.is_deleted.is_(False))
-    is_staff = current.role in (UserRole.LIBRARIAN.value, UserRole.ADMIN.value)
-    if not is_staff:
-        stmt = stmt.where(Activity.status != ActivityStatus.DRAFT.value)
+
+    if current.can(Permission.ACTIVITY_MANAGE_ALL.value):
+        pass  # 管理员看全部
+    elif current.can(Permission.ACTIVITY_CREATE.value):
+        # 学生会成员：自己申办的（含草稿/驳回）+ 已公开的
+        stmt = stmt.where(
+            or_(
+                Activity.organizer_id == current.user_id,
+                Activity.status.in_([s.value for s in ACTIVITY_PUBLIC_STATUSES]),
+            )
+        )
+    else:
+        stmt = stmt.where(Activity.status.in_([s.value for s in ACTIVITY_PUBLIC_STATUSES]))
+
     if pq.keyword:
         like = f"%{pq.keyword}%"
         stmt = stmt.where(or_(Activity.title.like(like), Activity.summary.like(like), Activity.location.like(like)))
@@ -99,6 +142,8 @@ def list_activities(
         stmt = stmt.where(Activity.status == status)
     if category:
         stmt = stmt.where(Activity.category == category)
+    if level:
+        stmt = stmt.where(Activity.level == level)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     if pq.order_by not in {"start_at", "created_at"}:
@@ -113,9 +158,7 @@ def list_activities(
 def activity_stats(db: Session = Depends(get_db)):
     base = select(func.count()).select_from(Activity).where(Activity.is_deleted.is_(False))
     total = db.scalar(base) or 0
-    by_status = {
-        s: db.scalar(base.where(Activity.status == s.value)) or 0 for s in ActivityStatus
-    }
+    by_status = {s.value: db.scalar(base.where(Activity.status == s.value)) or 0 for s in ActivityStatus}
     signup_sum = db.scalar(
         select(func.coalesce(func.sum(Activity.signup_count), 0)).where(Activity.is_deleted.is_(False))
     ) or 0
@@ -132,14 +175,15 @@ def activity_stats(db: Session = Depends(get_db)):
     )
 
 
-@router.post("", status_code=201, summary="新建活动（默认草稿）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.post("", status_code=201, summary="申办活动（默认草稿）", dependencies=[Depends(require_permissions(Permission.ACTIVITY_CREATE))])
 def create_activity(payload: ActivityCreate, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     organizer = db.get(User, current.user_id)
     row = Activity(
         **payload.model_dump(),
-        organizer_id=organizer.user_id if organizer else current.user_id,
-        organizer_name=organizer.name if organizer else "",
+        organizer_id=current.user_id,
+        organizer_name=organizer.name if organizer else current.name,
         status=ActivityStatus.DRAFT.value,
+        level=ActivityLevel.NONE.value,
     )
     db.add(row)
     db.commit()
@@ -147,7 +191,7 @@ def create_activity(payload: ActivityCreate, current: CurrentUser = Depends(get_
     return ok(_to_out(row, current))
 
 
-@router.patch("/{activity_id}", summary="编辑活动", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.patch("/{activity_id}", summary="编辑活动（主办方或管理员）")
 def update_activity(
     activity_id: str,
     payload: ActivityUpdate,
@@ -155,8 +199,11 @@ def update_activity(
     db: Session = Depends(get_db),
 ):
     row = _get_or_404(db, activity_id)
+    _require_manage(current, row)
     if row.status == ActivityStatus.FINISHED.value:
         raise BizError(CODE_ILLEGAL_STATE, "已结束的活动不可编辑")
+    if row.status == ActivityStatus.PENDING_REVIEW.value:
+        raise BizError(CODE_ILLEGAL_STATE, "审批中的活动不可编辑，请先撤回或等待审批结果")
     if "capacity" in payload.model_fields_set and payload.capacity is not None and payload.capacity != 0 and payload.capacity < row.signup_count:
         raise BizError(CODE_ILLEGAL_STATE, "名额上限不能低于已报名人数")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -175,28 +222,67 @@ def update_activity(
     return ok(_to_out(row, current))
 
 
-@router.post("/{activity_id}/publish", summary="发布活动", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
-def publish_activity(
+@router.post("/{activity_id}/submit", summary="提交审批（草稿/被驳回 → 待审批）")
+def submit_activity(
     activity_id: str,
-    payload: EmptyPayload | None = None,
+    payload: ActivitySubmitRequest | None = None,
     current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     row = _get_or_404(db, activity_id)
-    if row.status != ActivityStatus.DRAFT.value:
-        raise BizError(CODE_ILLEGAL_STATE, "仅草稿活动可以发布")
+    _require_manage(current, row)
+    if row.status not in (ActivityStatus.DRAFT.value, ActivityStatus.REJECTED.value, ActivityStatus.CANCELLED.value):
+        raise BizError(CODE_ILLEGAL_STATE, "只有草稿、被驳回或已取消的活动可以提交审批")
     _validate_publishable(row)
-    row.status = ActivityStatus.PUBLISHED.value
-    row.published_at = datetime.now(timezone.utc)
+    row.status = ActivityStatus.PENDING_REVIEW.value
+    row.submitted_at = datetime.now(timezone.utc)
+    row.review_comment = ""
     db.commit()
     db.refresh(row)
-    return ok(_to_out(row, current))
+    return ok(_to_out(row, current), message="已提交审批")
 
 
-@router.get("/mine", summary="当前学生的活动参与记录")
+@router.post(
+    "/{activity_id}/review",
+    summary="审批活动并定级（校级/院级）",
+    dependencies=[Depends(require_permissions(Permission.ACTIVITY_REVIEW))],
+)
+def review_activity(
+    activity_id: str,
+    payload: ActivityReviewRequest,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = _get_or_404(db, activity_id)
+    if row.status != ActivityStatus.PENDING_REVIEW.value:
+        raise BizError(CODE_ILLEGAL_STATE, "只有待审批的活动可以审批")
+    # 审批人不能审批自己申办的活动（系统管理员除外），避免既当运动员又当裁判
+    if row.organizer_id == current.user_id and not current.is_super_admin:
+        raise BizError(CODE_FORBIDDEN, "不能审批自己申办的活动，请转交其他管理员", http_status=403)
+
+    now = datetime.now(timezone.utc)
+    row.reviewed_by = current.user_id
+    row.reviewed_by_name = current.name
+    row.reviewed_at = now
+    row.review_comment = payload.comment
+    if payload.approved:
+        _validate_publishable(row)
+        row.level = payload.level or ActivityLevel.NONE.value
+        row.status = ActivityStatus.PUBLISHED.value
+        row.published_at = now
+        message = f"审批通过，已定为{ACTIVITY_LEVEL_LABELS.get(row.level, row.level)}并发布"
+    else:
+        row.status = ActivityStatus.REJECTED.value
+        message = "已驳回，申办人可修改后重新提交"
+    db.commit()
+    db.refresh(row)
+    return ok(_to_out(row, current), message=message)
+
+
+@router.get("/mine", summary="我参与的活动（报名记录）", dependencies=[Depends(require_permissions(Permission.ACTIVITY_SIGNUP))])
 def list_my_activities(
     pq: PageQuery = Depends(page_query),
-    current: CurrentUser = Depends(require_roles(UserRole.STUDENT)),
+    current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     stmt = (
@@ -240,19 +326,50 @@ def list_my_activities(
     return ok(result)
 
 
+@router.get("/managed", summary="我申办的活动（学生会成员 / 管理员）")
+def list_managed_activities(
+    pq: PageQuery = Depends(page_query),
+    status: str = Query(default=""),
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current.can(Permission.ACTIVITY_CREATE.value):
+        raise BizError(CODE_FORBIDDEN, "当前账号没有申办活动的权限", http_status=403)
+    stmt = select(Activity).where(Activity.is_deleted.is_(False))
+    if not current.can(Permission.ACTIVITY_MANAGE_ALL.value):
+        if current.can(Permission.ACTIVITY_REVIEW.value):
+            # 审批人：自己申办的 + 待审批的全部
+            stmt = stmt.where(
+                or_(
+                    Activity.organizer_id == current.user_id,
+                    Activity.status == ActivityStatus.PENDING_REVIEW.value,
+                )
+            )
+        else:
+            stmt = stmt.where(Activity.organizer_id == current.user_id)
+    if status:
+        stmt = stmt.where(Activity.status == status)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(
+        stmt.order_by(Activity.created_at.desc()).offset((pq.page - 1) * pq.page_size).limit(pq.page_size)
+    ).all()
+    return ok(page_result([_to_out(r, current) for r in rows], pq.page, pq.page_size, total))
+
+
 @router.get("/{activity_id}", summary="活动详情")
-def get_activity(activity_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_activity(activity_id: str, current: CurrentUser = Depends(get_optional_user), db: Session = Depends(get_db)):
     row = _get_or_404(db, activity_id)
-    if row.status == ActivityStatus.DRAFT.value and current.role not in (UserRole.LIBRARIAN.value, UserRole.ADMIN.value):
+    visible = row.status in {s.value for s in ACTIVITY_PUBLIC_STATUSES}
+    if not visible and not (_can_manage(current, row) or current.can(Permission.ACTIVITY_REVIEW.value)):
         raise BizError(CODE_NOT_FOUND, "活动不存在")
     return ok(_to_out(row, current))
 
 
-@router.post("/{activity_id}/signups", status_code=201, summary="当前学生报名")
+@router.post("/{activity_id}/signups", status_code=201, summary="报名（访客不可报名）", dependencies=[Depends(require_permissions(Permission.ACTIVITY_SIGNUP))])
 def signup_activity(
     activity_id: str,
     payload: EmptyPayload,
-    current: CurrentUser = Depends(require_roles(UserRole.STUDENT)),
+    current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     row = db.scalar(select(Activity).where(Activity.activity_id == activity_id).with_for_update())
@@ -314,9 +431,11 @@ def signup_activity(
     return ok(ActivitySignupOut.model_validate(signup).model_dump(), message="ok")
 
 
-@router.get("/{activity_id}/signups", summary="活动报名名单", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
-def list_activity_signups(activity_id: str, pq: PageQuery = Depends(page_query), db: Session = Depends(get_db)):
-    _get_or_404(db, activity_id)
+@router.get("/{activity_id}/signups", summary="活动报名名单（主办方或管理员）")
+def list_activity_signups(activity_id: str, pq: PageQuery = Depends(page_query), current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = _get_or_404(db, activity_id)
+    if not (_can_manage(current, row) or current.can(Permission.ACTIVITY_REVIEW.value)):
+        raise BizError(CODE_FORBIDDEN, "无权查看报名名单", http_status=403)
     stmt = (
         select(ActivitySignup, User.name, User.student_no)
         .join(User, User.user_id == ActivitySignup.user_id)
@@ -335,9 +454,15 @@ def list_activity_signups(activity_id: str, pq: PageQuery = Depends(page_query),
     return ok(page_result(items, pq.page, pq.page_size, total))
 
 
-@router.post("/{activity_id}/status", summary="状态流转（状态机校验）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
-def change_status(activity_id: str, payload: ActivityStatusChange, db: Session = Depends(get_db)):
+@router.post("/{activity_id}/status", summary="运营状态流转（报名截止/进行中/结束/取消）")
+def change_status(
+    activity_id: str,
+    payload: ActivityStatusChange,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     row = _get_or_404(db, activity_id)
+    _require_manage(current, row)
     allowed = ACTIVITY_STATUS_TRANSITIONS.get(row.status, set())
     if payload.target_status not in {s.value for s in allowed}:
         allow_text = "、".join(ACTIVITY_STATUS_LABELS.get(s.value, s.value) for s in allowed) or "无"
@@ -346,39 +471,36 @@ def change_status(activity_id: str, payload: ActivityStatusChange, db: Session =
             f"当前状态「{ACTIVITY_STATUS_LABELS.get(row.status, row.status)}」不能流转到"
             f"「{ACTIVITY_STATUS_LABELS.get(payload.target_status, payload.target_status)}」，可流转：{allow_text}",
         )
-    if payload.target_status == ActivityStatus.PUBLISHED.value:
-        _validate_publishable(row)
     row.status = payload.target_status
-    if payload.target_status == ActivityStatus.PUBLISHED.value:
-        row.published_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(row)
-    return ok(_to_out(row, CurrentUser(row.organizer_id, UserRole.LIBRARIAN.value)))
+    return ok(_to_out(row, current))
 
 
-@router.delete("/{activity_id}", summary="删除活动（软删除）", dependencies=[Depends(require_roles(UserRole.ADMIN))])
-def delete_activity(activity_id: str, db: Session = Depends(get_db)):
+@router.delete("/{activity_id}", summary="删除活动（软删除，仅草稿/驳回/取消）")
+def delete_activity(activity_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     row = _get_or_404(db, activity_id)
+    _require_manage(current, row)
+    if row.status not in (ActivityStatus.DRAFT.value, ActivityStatus.REJECTED.value, ActivityStatus.CANCELLED.value):
+        raise BizError(CODE_ILLEGAL_STATE, "只有草稿、被驳回或已取消的活动可以删除")
     row.is_deleted = True
     db.commit()
     return ok({"activity_id": activity_id, "deleted": True})
 
 
-@router.post(
-    "/{activity_id}/ai-copy",
-    summary="AI 生成活动宣传推文并回存 ai_copy",
-    dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))],
-)
+@router.post("/{activity_id}/ai-copy", summary="AI 生成活动宣传推文（人工确认后才可发布）")
 def generate_copy(
     activity_id: str,
     style: str = Query(default="xiaohongshu"),
+    current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     row = _get_or_404(db, activity_id)
+    _require_manage(current, row)
     text = llm_service.generate_copy(row.title, style)
     row.ai_copy = text
     conv = AIConversation(
-        user_id=row.organizer_id,
+        user_id=current.user_id,
         scene="copywriting",
         title=f"活动推文：{row.title}"[:120],
         book_id=None,

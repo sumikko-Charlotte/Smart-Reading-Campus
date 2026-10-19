@@ -1,21 +1,52 @@
-"""初始化演示数据：python scripts/seed.py
+"""初始化演示数据。
+
+用法：
+    python scripts/seed.py            # 幂等补齐（已有数据跳过）
+    python scripts/seed.py --reset    # 清空业务表后重建（仅演示环境使用）
 
 演示账号（密码统一 123456）：
-- admin      系统管理员   role=admin
-- T2009      图书馆老师   role=librarian
-- 2025211987 Alice        role=student
+    admin        系统管理员（全部权限 + 权限分配）
+    T2009        普通管理员（图书馆老师，有审批权）
+    T2010        普通管理员（审批权已被系统管理员收回）
+    2025211987   Alice   学生
+    2025211995   万贝    学生 + 额外授予「申办活动」（学生会成员）
+    2025211996   Bob     学生（无申办权）
+    guest        访客（只读 + AI 推荐降级 Mock）
 """
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import select  # noqa: E402
 
-from app.core.enums import ActivityCategory, ActivityStatus, BookSource, DriftStatus, UserRole  # noqa: E402
-from app.db.base import SessionLocal, init_db  # noqa: E402
-from app.db.models import Activity, Book, DriftRecord, User  # noqa: E402
+from app.core.enums import (  # noqa: E402
+    ActivityCategory,
+    ActivityLevel,
+    ActivityStatus,
+    BookSource,
+    CertificateStatus,
+    DriftStatus,
+    NotificationType,
+    SignupStatus,
+    SummaryStatus,
+    UserRole,
+)
+from app.core.permissions import Permission  # noqa: E402
+from app.core.security import new_id  # noqa: E402
+from app.db.base import Base, SessionLocal, engine, init_db  # noqa: E402
+from app.db.models import (  # noqa: E402
+    Activity,
+    ActivitySignup,
+    ActivitySummary,
+    Book,
+    Certificate,
+    DriftRecord,
+    Notification,
+    User,
+)
 
 CST = timezone(timedelta(hours=8))
 
@@ -26,9 +57,15 @@ def iso(days: int, hour: int = 14) -> datetime:
 
 
 USERS = [
-    dict(student_no="admin", name="系统管理员", role=UserRole.ADMIN.value, college="图书馆"),
-    dict(student_no="T2009", name="图书馆老师", role=UserRole.LIBRARIAN.value, college="图书馆"),
-    dict(student_no="2025211987", name="Alice", role=UserRole.STUDENT.value),
+    dict(student_no="admin", name="系统管理员", role=UserRole.SUPER_ADMIN.value, college="图书馆"),
+    dict(student_no="T2009", name="图书馆老师", role=UserRole.ADMIN.value, college="图书馆"),
+    dict(student_no="T2010", name="图书馆老师（无审批权）", role=UserRole.ADMIN.value, college="图书馆",
+         revoked_permissions=[Permission.ACTIVITY_REVIEW.value]),
+    dict(student_no="2025211987", name="Alice", role=UserRole.STUDENT.value, college="信息与通信工程学院"),
+    dict(student_no="2025211995", name="万贝", role=UserRole.STUDENT.value, college="计算机学院",
+         granted_permissions=[Permission.ACTIVITY_CREATE.value]),
+    dict(student_no="2025211996", name="Bob", role=UserRole.STUDENT.value, college="经济管理学院"),
+    dict(student_no="guest", name="访客", role=UserRole.VISITOR.value),
 ]
 
 BOOKS = [
@@ -40,76 +77,244 @@ BOOKS = [
     dict(isbn="9787111636663", title="Vue.js 设计与实现", author="霍春阳", publisher="机械工业出版社", category="TP393", tags=["前端", "Vue"], borrow_count=45, total_copies=0, available_copies=0),
 ]
 
+# status / level / organizer_key / offset
 ACTIVITIES = [
-    dict(title="「书海拾贝」秋季读书分享会", subtitle="与同好共读一本好书", category=ActivityCategory.READING_SHARE.value, location="图书馆三层报告厅", capacity=60, status=ActivityStatus.PUBLISHED.value, signup_count=42, checkin_count=0, need_certificate=True, start_offset=5, signup_offset_end=3),
-    dict(title="AI 时代的深度阅读主题讲座", subtitle="当大模型遇见图书馆", category=ActivityCategory.LECTURE.value, location="学术交流中心 201", capacity=120, status=ActivityStatus.SIGNUP_CLOSED.value, signup_count=118, checkin_count=0, need_certificate=True, start_offset=1, signup_offset_end=-1),
-    dict(title="21 天阅读打卡挑战（第一期）", subtitle="每天 30 分钟，养成阅读习惯", category=ActivityCategory.READING_CHALLENGE.value, location="线上打卡 + 小程序", capacity=0, status=ActivityStatus.FINISHED.value, signup_count=236, checkin_count=189, need_certificate=False, start_offset=-20, signup_offset_end=-25),
-    dict(title="闲置图书漂流集市（预告）", subtitle="让好书流动起来", category=ActivityCategory.BOOK_DRIFT.value, location="图书馆一层大厅", capacity=200, status=ActivityStatus.DRAFT.value, signup_count=0, checkin_count=0, need_certificate=False, start_offset=12, signup_offset_end=8),
+    dict(title="「书海拾贝」秋季读书分享会", subtitle="与同好共读一本好书", category=ActivityCategory.READING_SHARE.value,
+         location="图书馆三层报告厅", capacity=60, status=ActivityStatus.PUBLISHED.value, level=ActivityLevel.SCHOOL.value,
+         signup_count=42, need_certificate=True, organizer="T2009", start_offset=5, signup_end_offset=3),
+    dict(title="AI 时代的深度阅读主题讲座", subtitle="当大模型遇见图书馆", category=ActivityCategory.LECTURE.value,
+         location="学术交流中心 201", capacity=120, status=ActivityStatus.SIGNUP_CLOSED.value, level=ActivityLevel.SCHOOL.value,
+         signup_count=118, need_certificate=True, organizer="T2009", start_offset=1, signup_end_offset=-1),
+    dict(title="21 天阅读打卡挑战（第一期）", subtitle="每天 30 分钟，养成阅读习惯", category=ActivityCategory.READING_CHALLENGE.value,
+         location="线上打卡 + 小程序", capacity=0, status=ActivityStatus.FINISHED.value, level=ActivityLevel.SCHOOL.value,
+         signup_count=3, checkin_count=2, need_certificate=True, organizer="T2009", start_offset=-20, signup_end_offset=-25),
+    dict(title="闲置图书漂流集市（预告）", subtitle="让好书流动起来", category=ActivityCategory.BOOK_DRIFT.value,
+         location="图书馆一层大厅", capacity=200, status=ActivityStatus.DRAFT.value, level=ActivityLevel.NONE.value,
+         signup_count=0, need_certificate=False, organizer="T2009", start_offset=12, signup_end_offset=8),
+    dict(title="「书页间的光」校园摄影展", subtitle="用镜头记录阅读现场", category=ActivityCategory.EXHIBITION.value,
+         location="图书馆二层展廊", capacity=80, status=ActivityStatus.PENDING_REVIEW.value, level=ActivityLevel.NONE.value,
+         signup_count=0, need_certificate=True, organizer="2025211995", start_offset=18, signup_end_offset=14),
+    dict(title="旧书交换市集（第二期）", subtitle="换一本没读过的书", category=ActivityCategory.BOOK_DRIFT.value,
+         location="图书馆一层大厅", capacity=100, status=ActivityStatus.REJECTED.value, level=ActivityLevel.NONE.value,
+         signup_count=0, need_certificate=False, organizer="2025211995", start_offset=25, signup_end_offset=21),
+    dict(title="「共读一本书」院级分享会", subtitle="院系联合阅读活动", category=ActivityCategory.READING_SHARE.value,
+         location="沙河校区学生活动中心", capacity=50, status=ActivityStatus.FINISHED.value, level=ActivityLevel.COLLEGE.value,
+         signup_count=2, checkin_count=2, need_certificate=True, organizer="T2009", start_offset=-45, signup_end_offset=-50),
 ]
+
+SUMMARY_TEXT = (
+    "21 天阅读打卡第一期共吸引 236 名同学参与，累计打卡 3,842 次，人均阅读时长 42 分钟/天。\n\n"
+    "本期共读《人类简史》《百年孤独》两本书，线下分享会上有 12 位同学做了主题发言。"
+    "从打卡数据看，晚上 21:00—23:00 是阅读高峰，建议下一期把线上答疑安排在这个时段。\n\n"
+    "感谢每一位坚持到最后的同学，第二期将于下月启动。"
+)
+
+
+def reset_tables() -> None:
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    print("[seed] 已清空并重建所有表（--reset）")
+
+
+def _ensure_user(db, data: dict) -> User:
+    row = db.scalar(select(User).where(User.student_no == data["student_no"]))
+    granted = data.get("granted_permissions", [])
+    revoked = data.get("revoked_permissions", [])
+    payload = {k: v for k, v in data.items() if k not in ("granted_permissions", "revoked_permissions")}
+    if row is None:
+        row = User(**payload, granted_permissions=granted, revoked_permissions=revoked)
+        db.add(row)
+        db.flush()
+        print(f"[seed] 新增用户 {data['student_no']} {data['name']}（{data['role']}）")
+    else:
+        row.role = data["role"]
+        row.name = data["name"]
+        row.college = data.get("college", row.college)
+        row.granted_permissions = granted
+        row.revoked_permissions = revoked
+    return row
+
+
+def _ensure_activity(db, data: dict, users: dict[str, User]) -> Activity:
+    row = db.scalar(select(Activity).where(Activity.title == data["title"], Activity.is_deleted.is_(False)))
+    organizer = users[data["organizer"]]
+    if row is None:
+        row = Activity(
+            activity_id=new_id("activity"),
+            title=data["title"],
+            subtitle=data["subtitle"],
+            category=data["category"],
+            location=data["location"],
+            capacity=data["capacity"],
+            status=data["status"],
+            level=data["level"],
+            signup_count=data.get("signup_count", 0),
+            checkin_count=data.get("checkin_count", 0),
+            need_certificate=data["need_certificate"],
+            certificate_template_id="tpl_default" if data["need_certificate"] else "",
+            organizer_id=organizer.user_id,
+            organizer_name=organizer.name,
+            start_at=iso(data["start_offset"]),
+            end_at=iso(data["start_offset"], hour=17),
+            signup_start_at=iso(data["signup_end_offset"] - 10),
+            signup_end_at=iso(data["signup_end_offset"]),
+            published_at=iso(-2) if data["status"] in (
+                ActivityStatus.PUBLISHED.value, ActivityStatus.SIGNUP_CLOSED.value,
+                ActivityStatus.ONGOING.value, ActivityStatus.FINISHED.value,
+            ) else None,
+            submitted_at=iso(-3) if data["status"] not in (
+                ActivityStatus.DRAFT.value, ActivityStatus.PUBLISHED.value
+            ) else None,
+        )
+        if data["status"] in (ActivityStatus.PUBLISHED.value, ActivityStatus.SIGNUP_CLOSED.value,
+                              ActivityStatus.ONGOING.value, ActivityStatus.FINISHED.value):
+            reviewer = users["T2009"]
+            row.reviewed_by = reviewer.user_id
+            row.reviewed_by_name = reviewer.name
+            row.reviewed_at = iso(-3)
+            row.review_comment = "主题与图书馆阅读推广方向一致，同意立项"
+        if data["status"] == ActivityStatus.REJECTED.value:
+            row.review_comment = "时间与馆内其他活动冲突，请调整后重新提交"
+        db.add(row)
+        db.flush()
+        print(f"[seed] 新增活动 {data['title']}（{data['status']}）")
+    return row
 
 
 def main() -> None:
-    init_db()
+    if "--reset" in sys.argv:
+        reset_tables()
+    else:
+        init_db()
+
     db = SessionLocal()
     try:
-        if db.scalar(select(User).limit(1)) is None:
-            for u in USERS:
-                db.add(User(**u))
-            print(f"[seed] 用户 {len(USERS)} 条")
-        else:
-            print("[seed] 用户已存在，跳过")
+        users = {u["student_no"]: _ensure_user(db, u) for u in USERS}
+        db.flush()
 
-        librarian = db.scalar(select(User).where(User.student_no == "T2009"))
-        if librarian is not None:
-            librarian.name = "图书馆老师"
-            librarian.email = ""
-            librarian.phone = ""
+        for idx, b in enumerate(BOOKS):
+            exists = db.scalar(select(Book).where(Book.isbn == b["isbn"], Book.is_deleted.is_(False)))
+            if exists is None:
+                db.add(Book(**b, source=BookSource.DRIFT.value if idx == 5 else BookSource.LIBRARY.value, ai_tags=[]))
+        db.flush()
 
-        if db.scalar(select(Book).limit(1)) is None:
-            for idx, b in enumerate(BOOKS):
-                source = BookSource.DRIFT.value if idx == 5 else BookSource.LIBRARY.value
-                db.add(Book(**b, source=source))
-            print(f"[seed] 图书 {len(BOOKS)} 条")
-        else:
-            print("[seed] 图书已存在，跳过")
+        activities = {data["title"]: _ensure_activity(db, data, users) for data in ACTIVITIES}
 
-        organizer = db.scalar(select(User).where(User.student_no == "T2009"))
-        if db.scalar(select(Activity).limit(1)) is None:
-            for a in ACTIVITIES:
-                start_off = a.pop("start_offset")
-                signup_end_off = a.pop("signup_offset_end")
+        # 已结束活动的报名名单 + 证书
+        finished = activities["21 天阅读打卡挑战（第一期）"]
+        finished_college = activities["「共读一本书」院级分享会"]
+        alice = users["2025211987"]
+        wanbei = users["2025211995"]
+        for activity, extra_user in ((finished, alice), (finished, wanbei), (finished_college, alice), (finished_college, wanbei)):
+            exists = db.scalar(
+                select(ActivitySignup).where(
+                    ActivitySignup.activity_id == activity.activity_id,
+                    ActivitySignup.user_id == extra_user.user_id,
+                )
+            )
+            if exists is None:
                 db.add(
-                    Activity(
-                        **a,
-                        organizer_id=organizer.user_id if organizer else "usr_seed",
-                        organizer_name=organizer.name if organizer else "",
-                        start_at=iso(start_off),
-                        end_at=iso(start_off, hour=17),
-                        signup_start_at=iso(signup_end_off - 10),
-                        signup_end_at=iso(signup_end_off),
-                        published_at=iso(-2) if a["status"] != ActivityStatus.DRAFT.value else None,
+                    ActivitySignup(
+                        signup_id=new_id("signup"),
+                        activity_id=activity.activity_id,
+                        user_id=extra_user.user_id,
+                        status=SignupStatus.APPROVED.value,
+                        signed_up_at=activity.signup_start_at or iso(-30),
+                        checked_in_at=activity.start_at,
                     )
                 )
-            print(f"[seed] 活动 {len(ACTIVITIES)} 条")
-        else:
-            print("[seed] 活动已存在，跳过")
+        db.flush()
 
+        year = datetime.now(CST).year
+        for activity, student in ((finished, alice), (finished, wanbei), (finished_college, alice)):
+            exists = db.scalar(
+                select(Certificate).where(
+                    Certificate.activity_id == activity.activity_id,
+                    Certificate.user_id == student.user_id,
+                )
+            )
+            if exists is None:
+                verify_code = uuid.uuid4().hex[:8].upper()
+                level_code = "S" if activity.level == ActivityLevel.SCHOOL.value else "C"
+                cert = Certificate(
+                    certificate_id=new_id("certificate"),
+                    serial_no=f"ZYYC-{year}-{level_code}-{verify_code}",
+                    verify_code=verify_code,
+                    user_id=student.user_id,
+                    student_name=student.name,
+                    student_no=student.student_no,
+                    college=student.college,
+                    activity_id=activity.activity_id,
+                    activity_title=activity.title,
+                    activity_level=activity.level,
+                    certificate_name="荣誉证书",
+                    seal_name="北京邮电大学图书馆",
+                    issued_by=users["T2009"].user_id,
+                    issued_by_name=users["T2009"].name,
+                    issued_at=iso(-18),
+                    status=CertificateStatus.ISSUED.value,
+                )
+                db.add(cert)
+                db.flush()
+                signup = db.scalar(
+                    select(ActivitySignup).where(
+                        ActivitySignup.activity_id == activity.activity_id,
+                        ActivitySignup.user_id == student.user_id,
+                    )
+                )
+                if signup is not None:
+                    signup.certificate_no = cert.serial_no
+        db.flush()
+
+        # 活动总结 + 推送（访客也能看到）
+        exists = db.scalar(select(ActivitySummary).where(ActivitySummary.activity_id == finished.activity_id))
+        if exists is None:
+            summary = ActivitySummary(
+                summary_id=new_id("summary"),
+                activity_id=finished.activity_id,
+                activity_title=finished.title,
+                title="21 天，我们一起读完了两本书",
+                content=SUMMARY_TEXT,
+                images=[],
+                author_id=users["T2009"].user_id,
+                author_name=users["T2009"].name,
+                status=SummaryStatus.PUBLISHED.value,
+                published_at=iso(-17),
+                view_count=126,
+            )
+            db.add(summary)
+            db.flush()
+            db.add(
+                Notification(
+                    notification_id=new_id("notification"),
+                    type=NotificationType.ACTIVITY_SUMMARY.value,
+                    title=f"活动回顾：{summary.title}",
+                    content=SUMMARY_TEXT[:200],
+                    ref_type="activity_summary",
+                    ref_id=summary.summary_id,
+                    target_roles=["student", "visitor", "admin", "super_admin"],
+                    created_by=users["T2009"].user_id,
+                    created_by_name=users["T2009"].name,
+                )
+            )
+
+        # 漂流池
         drift_book = db.scalar(select(Book).where(Book.isbn == "9787111636663"))
         if drift_book is not None and db.scalar(select(DriftRecord).where(DriftRecord.book_id == drift_book.book_id)) is None:
             db.add(
                 DriftRecord(
+                    drift_id=new_id("drift"),
                     book_id=drift_book.book_id,
-                    current_holder_id=librarian.user_id if librarian else None,
+                    current_holder_id=users["T2009"].user_id,
                     drift_status=DriftStatus.IDLE.value,
                     drift_location="图书馆一层大厅",
                 )
             )
-        if librarian is not None:
-            for activity in db.scalars(select(Activity).where(Activity.organizer_id == librarian.user_id)).all():
-                activity.organizer_name = "图书馆老师"
 
         db.commit()
         print("[seed] 完成 ✅")
+        print("[seed] 演示账号 / 密码 123456：admin(系统管理员) T2009(管理员,可审批) T2010(管理员,无审批权) "
+              "2025211987(学生) 2025211995(学生,可申办活动) guest(访客)")
     finally:
         db.close()
 

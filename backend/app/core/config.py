@@ -31,7 +31,8 @@ class Settings(BaseSettings):
 
     # 数据库：本轮先用 SQLite 跑通，切 MySQL 只需改这一行
     # 例：mysql+pymysql://user:pwd@127.0.0.1:3306/smart_reading?charset=utf8mb4
-    DATABASE_URL: str = "sqlite:///./smart_reading.db"
+    # 绝对路径：避免从仓库根目录 / backend/ 启动时落到两个不同的库文件
+    DATABASE_URL: str = f"sqlite:///{(_BACKEND_DIR / 'smart_reading.db').as_posix()}"
 
     # 鉴权（本轮为占位实现，第 2 轮接真实 JWT）
     SECRET_KEY: str = "smart-reading-campus-dev-secret"

@@ -10,6 +10,15 @@
       <el-tag type="info" effect="plain">手动生成</el-tag>
     </div>
 
+    <el-alert
+      v-if="degraded"
+      class="degraded-tip"
+      type="warning"
+      :closable="true"
+      show-icon
+      title="当前为访客模式：推荐结果由本地 Mock 生成（不调用真实大模型），登录后可获得个性化推荐。"
+    />
+
     <div class="filter-bar">
       <el-form :inline="true" :model="form" @submit.prevent>
         <el-form-item label="阅读偏好">
@@ -53,7 +62,13 @@
 
             <div class="book-foot">
               <span class="text-muted">借阅 {{ item.book.borrow_count }} 次 · 可借 {{ item.book.available_copies }}/{{ item.book.total_copies }}</span>
-              <el-button text type="primary" size="small" @click="onAnalyze(item.book)">
+              <el-button
+                v-if="store.can(PERM.AI_CHAT)"
+                text
+                type="primary"
+                size="small"
+                @click="onAnalyze(item.book)"
+              >
                 {{ item.book.ai_summary ? '查看 AI 解读' : '生成 AI 解读' }}
               </el-button>
             </div>
@@ -76,9 +91,13 @@ import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, Reading } from '@element-plus/icons-vue'
 import { buildBookAiSummary, recommendBooks } from '@/api/modules'
+import { useUserStore } from '@/store/user'
+import { PERM } from '@/constants'
 
+const store = useUserStore()
 const loading = ref(false)
 const items = ref([])
+const degraded = ref(false)
 const form = reactive({ extra_prompt: '', limit: 6 })
 
 const dialogVisible = ref(false)
@@ -93,7 +112,8 @@ async function onRecommend() {
   try {
     const data = await recommendBooks({ extra_prompt: form.extra_prompt, limit: form.limit })
     items.value = data.items
-    ElMessage.success(`已生成 ${data.items.length} 条推荐（模型：${data.model} / 提示词 ${data.prompt_version}）`)
+    degraded.value = Boolean(data.degraded)
+    ElMessage.success(`已生成 ${data.items.length} 条推荐（${data.degraded ? '本地 Mock' : `模型：${data.model}`} / 提示词 ${data.prompt_version}）`)
   } catch (error) {
     items.value = []
   } finally {
@@ -126,6 +146,10 @@ async function onAnalyze(book) {
 </script>
 
 <style scoped>
+.degraded-tip {
+  margin-bottom: 12px;
+}
+
 .recommend-wrap {
   min-height: 260px;
 }

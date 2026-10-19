@@ -2,12 +2,12 @@
   <div class="page">
     <div class="page-header">
       <div>
-        <h2 class="page-title">活动管理</h2>
-        <p class="page-desc">阅读推广活动全流程闭环管理：发起 → 招募 → 签到 → 公示 → 电子证书 → 成果展示</p>
+        <h2 class="page-title">{{ store.can(PERM.ACTIVITY_MANAGE_ALL) ? '活动管理' : '我申办的活动' }}</h2>
+        <p class="page-desc">申办 → 提交审批 → 审批定级（校级/院级）→ 发布 → 运营 → 总结与证书</p>
       </div>
       <div>
         <el-button :icon="Refresh" :loading="loading" @click="fetchList">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="$router.push('/activities/create')">新建活动</el-button>
+        <el-button type="primary" :icon="Plus" @click="$router.push('/activities/create')">申办活动</el-button>
       </div>
     </div>
 
@@ -37,7 +37,7 @@
     <!-- 列表区 -->
     <div class="card-block">
       <el-table v-loading="loading" :data="list" stripe border style="width: 100%">
-        <el-table-column label="活动" min-width="260">
+        <el-table-column label="活动" min-width="250">
           <template #default="{ row }">
             <div class="cell-title">
               <el-link type="primary" :underline="false" @click="goDetail(row)">{{ row.title }}</el-link>
@@ -47,24 +47,33 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="分类" width="130">
+        <el-table-column label="分类" width="120">
           <template #default="{ row }">{{ labelOf(ACTIVITY_CATEGORY, row.category) }}</template>
         </el-table-column>
 
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="typeOf(ACTIVITY_STATUS, row.status)" effect="light">{{ row.status_label || labelOf(ACTIVITY_STATUS, row.status) }}</el-tag>
+            <el-tag :type="typeOf(ACTIVITY_STATUS, row.status)" effect="light">{{ labelOf(ACTIVITY_STATUS, row.status) }}</el-tag>
           </template>
         </el-table-column>
 
-        <el-table-column label="活动时间" width="180">
+        <el-table-column label="等级" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.level !== 'none'" :type="typeOf(ACTIVITY_LEVEL, row.level)" effect="plain">
+              {{ labelOf(ACTIVITY_LEVEL, row.level) }}
+            </el-tag>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="活动时间" width="170">
           <template #default="{ row }">
             <div>{{ formatDateTime(row.start_at) }}</div>
             <div class="text-muted cell-sub">报名截止 {{ formatDateTime(row.signup_end_at) }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="报名 / 名额" width="170">
+        <el-table-column label="报名 / 名额" width="160">
           <template #default="{ row }">
             <el-progress
               :percentage="percentOf(row)"
@@ -75,17 +84,38 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="location" label="地点" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="location" label="地点" min-width="130" show-overflow-tooltip />
 
-        <el-table-column label="操作" width="230" fixed="right">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" size="small" @click="goDetail(row)">详情</el-button>
-            <el-button text type="primary" size="small" :disabled="row.status === 'finished'" @click="$router.push(`/activities/${row.activity_id}/edit`)">
-              编辑
-            </el-button>
 
-            <el-dropdown @command="(cmd) => onStatusCommand(row, cmd)">
-              <el-button text type="primary" size="small" :disabled="!nextStatuses(row).length">
+            <el-button
+              v-if="canSubmit(row)"
+              text
+              type="warning"
+              size="small"
+              @click="onSubmitReview(row)"
+            >提交审批</el-button>
+
+            <el-button
+              v-if="canReview(row)"
+              text
+              type="danger"
+              size="small"
+              @click="$router.push({ path: '/activities/review', query: { activity_id: row.activity_id } })"
+            >审批</el-button>
+
+            <el-button
+              v-if="canEdit(row)"
+              text
+              type="primary"
+              size="small"
+              @click="$router.push(`/activities/${row.activity_id}/edit`)"
+            >编辑</el-button>
+
+            <el-dropdown v-if="nextStatuses(row).length" @command="(cmd) => onStatusCommand(row, cmd)">
+              <el-button text type="primary" size="small">
                 状态流转<el-icon><ArrowDown /></el-icon>
               </el-button>
               <template #dropdown>
@@ -96,11 +126,27 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+
+            <el-button
+              v-if="canWriteSummary(row)"
+              text
+              type="success"
+              size="small"
+              @click="$router.push(`/activities/${row.activity_id}/summary`)"
+            >总结</el-button>
+
+            <el-button
+              v-if="row.need_certificate && row.status === 'finished' && store.can(PERM.CERTIFICATE_ISSUE)"
+              text
+              type="warning"
+              size="small"
+              @click="$router.push({ path: '/certificates/manage', query: { activity_id: row.activity_id } })"
+            >证书</el-button>
           </template>
         </el-table-column>
 
         <template #empty>
-          <el-empty description="暂无活动数据，点击右上角「新建活动」开始" />
+          <el-empty description="暂无活动数据，点击右上角「申办活动」开始" />
         </template>
       </el-table>
 
@@ -125,11 +171,13 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus, Refresh, Search } from '@element-plus/icons-vue'
-import { changeActivityStatus, listActivities } from '@/api/activity'
-import { ACTIVITY_CATEGORY, ACTIVITY_STATUS, ACTIVITY_STATUS_FLOW, labelOf, typeOf } from '@/constants'
+import { changeActivityStatus, listActivities, submitActivity } from '@/api/activity'
+import { useUserStore } from '@/store/user'
+import { ACTIVITY_CATEGORY, ACTIVITY_LEVEL, ACTIVITY_STATUS, ACTIVITY_STATUS_FLOW, PERM, labelOf, typeOf } from '@/constants'
 import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
+const store = useUserStore()
 const loading = ref(false)
 const list = ref([])
 const total = ref(0)
@@ -142,9 +190,33 @@ function percentOf(row) {
   return Math.min(100, Math.round((row.signup_count / row.capacity) * 100))
 }
 
-/** 前端镜像状态机：只控制按钮可用性，真正校验在后端 */
+/** 前端镜像运营状态机；审批流转走「提交审批 / 审批」接口 */
 function nextStatuses(row) {
+  if (!canOperate(row)) return []
   return ACTIVITY_STATUS_FLOW[row.status] ?? []
+}
+
+/** 是否有权对该活动做运营操作 */
+function canOperate(row) {
+  if (store.can(PERM.ACTIVITY_MANAGE_ALL)) return true
+  return row.organizer_id === store.profile?.user_id && store.can(PERM.ACTIVITY_CREATE)
+}
+
+function canEdit(row) {
+  return canOperate(row) && !['finished', 'pending_review'].includes(row.status)
+}
+
+function canSubmit(row) {
+  return canOperate(row) && ['draft', 'rejected', 'cancelled'].includes(row.status)
+}
+
+function canReview(row) {
+  return store.can(PERM.ACTIVITY_REVIEW) && row.status === 'pending_review' && row.organizer_id !== store.profile?.user_id
+}
+
+function canWriteSummary(row) {
+  if (!['ongoing', 'finished'].includes(row.status)) return false
+  return store.can(PERM.ACTIVITY_SUMMARY) || (row.organizer_id === store.profile?.user_id && store.can(PERM.ACTIVITY_CREATE))
 }
 
 async function fetchList() {
@@ -172,28 +244,44 @@ function goDetail(row) {
   router.push(`/activities/${row.activity_id}`)
 }
 
+async function onSubmitReview(row) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `将「${row.title}」提交管理员审批，审批通过后将按选定等级发布。可填写提交说明：`,
+      '提交审批',
+      { type: 'info', inputPlaceholder: '如：场地已预约、海报已制作（选填）', confirmButtonText: '提交审批', cancelButtonText: '再想想' }
+    )
+    await submitActivity(row.activity_id, value || '')
+    ElMessage.success('已提交审批，等待管理员定级')
+    fetchList()
+  } catch (err) {
+    if (err !== 'cancel') {
+      /* 错误提示由统一响应体给出 */
+    }
+  }
+}
+
 async function onStatusCommand(row, target) {
   const label = labelOf(ACTIVITY_STATUS, target)
   const needReason = target === 'cancelled'
   try {
     const { value } = await ElMessageBox.prompt(
-      needReason ? `将「${row.title}」流转为「${label}」，请填写取消原因（会记录到日志）：` : `确认将「${row.title}」流转为「${label}」吗？`,
+      needReason ? `将「${row.title}」流转为「${label}」，请填写取消原因：` : `确认将「${row.title}」流转为「${label}」吗？`,
       '状态流转确认',
       {
         type: 'warning',
         inputType: needReason ? 'textarea' : 'text',
-        inputValue: '',
         inputPlaceholder: needReason ? '如：场地冲突，延期举行' : '可填写备注（选填）',
         confirmButtonText: '确认流转',
         cancelButtonText: '再想想'
       }
     )
-    const data = await changeActivityStatus(row.activity_id, target, value || '')
-    ElMessage.success(`已流转为「${labelOf(ACTIVITY_STATUS, data.status)}」`)
+    await changeActivityStatus(row.activity_id, target, value || '')
+    ElMessage.success(`已流转为「${label}」`)
     fetchList()
   } catch (err) {
     if (err !== 'cancel') {
-      // 后端已通过统一响应体给出错误提示（如非法流转 1005）
+      /* 后端已通过统一响应体给出错误提示（如非法流转 1005） */
     }
   }
 }

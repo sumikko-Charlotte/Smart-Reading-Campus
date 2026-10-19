@@ -1,4 +1,8 @@
-"""用户与登录：POST /auth/login、GET /users/me、用户 CRUD（RBAC）。"""
+"""用户与登录：登录、当前用户、用户 CRUD。
+
+角色只有 4 个取值（visitor/student/admin/super_admin），但**权限逐项可配**，
+具体校验在 app.core.permissions 与 app.api.v1.permission。
+"""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -8,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.deps import page_query
 from app.core.config import settings
 from app.core.enums import UserRole, UserStatus
+from app.core.permissions import ROLE_LABELS, effective_permissions
 from app.core.response import CODE_NOT_FOUND, CODE_UNAUTHORIZED, BizError, ok, page_result
 from app.core.security import (
     CurrentUser,
@@ -15,10 +20,11 @@ from app.core.security import (
     get_current_user,
     mask_email,
     mask_phone,
-    require_roles,
+    require_permissions,
 )
 from app.db.base import get_db
 from app.db.models import User
+from app.core.permissions import Permission
 from app.schemas.common import PageQuery
 from app.schemas.user import LoginRequest, LoginResponse, UserCreate, UserOut, UserUpdate
 
@@ -27,11 +33,16 @@ router = APIRouter(tags=["用户与鉴权"])
 DEMO_PASSWORD = "123456"
 
 
-def _to_out(user: User, viewer: CurrentUser | None = None) -> dict:
+def user_out(user: User, viewer: CurrentUser | None = None) -> dict:
+    """统一出口：带有效权限 + 按查看者脱敏联系方式。"""
     data = UserOut.model_validate(user).model_dump()
+    data["permissions"] = sorted(
+        effective_permissions(user.role, user.granted_permissions, user.revoked_permissions)
+    )
+    data["role_label"] = ROLE_LABELS.get(user.role, user.role)
     is_self = viewer is not None and viewer.user_id == user.user_id
-    is_admin = viewer is not None and viewer.role == UserRole.ADMIN.value
-    if not (is_self or is_admin):
+    can_see_all = viewer is not None and viewer.can(Permission.SYSTEM_USER.value)
+    if not (is_self or can_see_all):
         data["phone"] = mask_phone(data["phone"])
         data["email"] = mask_email(data["email"])
     return data
@@ -54,23 +65,27 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         LoginResponse(
             token=token,
             expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            user=UserOut.model_validate(user),
+            user=UserOut.model_validate(user_out(user, CurrentUser(user.user_id, user.role))),
         ).model_dump()
     )
 
 
-@router.get("/users/me", summary="当前登录用户信息")
+@router.get("/users/me", summary="当前登录用户信息（含有效权限）")
 def me(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.get(User, user.user_id)
     if row is None:
         raise BizError(CODE_NOT_FOUND, "用户不存在")
-    return ok(_to_out(row, user))
+    return ok(user_out(row, user))
 
 
-@router.get("/users", summary="用户列表（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.get(
+    "/users",
+    summary="用户列表（管理端）",
+    dependencies=[Depends(require_permissions(Permission.SYSTEM_USER))],
+)
 def list_users(
     pq: PageQuery = Depends(page_query),
-    role: str = Query(default=""),
+    role: str = Query(default="", description="visitor/student/admin/super_admin"),
     current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -87,34 +102,44 @@ def list_users(
     order_col = getattr(User, pq.order_by)
     stmt = stmt.order_by(order_col.desc() if pq.order == "desc" else order_col.asc())
     rows = db.scalars(stmt.offset((pq.page - 1) * pq.page_size).limit(pq.page_size)).all()
-    return ok(page_result([_to_out(r, current) for r in rows], pq.page, pq.page_size, total))
+    return ok(page_result([user_out(r, current) for r in rows], pq.page, pq.page_size, total))
 
 
-@router.post("/users", summary="新增用户（管理端）", dependencies=[Depends(require_roles(UserRole.ADMIN))])
+@router.post(
+    "/users",
+    status_code=201,
+    summary="新增用户（管理端）",
+    dependencies=[Depends(require_permissions(Permission.SYSTEM_USER))],
+)
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+    if payload.role == UserRole.SUPER_ADMIN.value:
+        raise BizError(1003, "系统管理员不允许通过接口创建，请由运维在数据库中设置", http_status=403)
     exists = db.scalar(select(User).where(User.student_no == payload.student_no))
     if exists:
         raise BizError(1001, "该学号已存在")
-    row = User(**payload.model_dump())
+    row = User(**payload.model_dump(), granted_permissions=[], revoked_permissions=[])
     db.add(row)
     db.commit()
     db.refresh(row)
-    return ok(UserOut.model_validate(row).model_dump())
+    return ok(user_out(row, CurrentUser(row.user_id, row.role)))
 
 
-@router.patch("/users/{user_id}", summary="更新用户")
+@router.patch("/users/{user_id}", summary="更新用户（本人或具有用户管理权限者）")
 def update_user(user_id: str, payload: UserUpdate, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.get(User, user_id)
     if row is None or row.is_deleted:
         raise BizError(CODE_NOT_FOUND, "用户不存在")
-    if current.user_id != user_id and not current.is_admin:
+    if current.user_id != user_id and not current.can(Permission.SYSTEM_USER.value):
         raise BizError(1003, "只能修改本人信息", http_status=403)
     for key, value in payload.model_dump(exclude_unset=True).items():
         if value is None and key in {"name", "status"}:
             raise BizError(1001, f"{key} 不允许为 null")
         if value is None and key in {"college", "major", "class_no", "grade", "phone", "email", "avatar_url"}:
             value = ""
+        # 自己不能把自己禁用，避免唯一管理员被锁在门外
+        if key == "status" and current.user_id == user_id and value != UserStatus.ACTIVE.value:
+            raise BizError(1005, "不能禁用当前登录账号")
         setattr(row, key, value)
     db.commit()
     db.refresh(row)
-    return ok(_to_out(row, current))
+    return ok(user_out(row, current))

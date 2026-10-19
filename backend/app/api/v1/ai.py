@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.core.enums import ConversationScene, ConversationStatus, MessageRole
+from app.core.permissions import Permission
 from app.core.response import CODE_NOT_FOUND, CODE_SERVER_ERROR, BizError, ok, page_result
-from app.core.security import CurrentUser, get_current_user, new_id
+from app.core.security import CurrentUser, get_current_user, new_id, require_permissions
 from app.db.base import get_db
 from app.db.models import AIConversation, Book
 from app.schemas.ai import ChatRequest, ChatResponse, ConversationBrief, ConversationOut, CopywritingRequest, ChatMessage
@@ -30,7 +31,11 @@ def _get_conversation(db: Session, conversation_id: str, user_id: str) -> AIConv
     return row
 
 
-@router.post("/chat", summary="多轮对话（stream=true 时返回 SSE 流）")
+@router.post(
+    "/chat",
+    summary="多轮对话（stream=true 时返回 SSE 流；访客不可用）",
+    dependencies=[Depends(require_permissions(Permission.AI_CHAT))],
+)
 def chat(payload: ChatRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     book = db.get(Book, payload.book_id) if payload.book_id else None
 
@@ -136,7 +141,11 @@ def delete_conversation(conversation_id: str, current: CurrentUser = Depends(get
     return ok({"conversation_id": conversation_id, "deleted": True})
 
 
-@router.post("/copywriting", summary="生成活动推文/宣传文案（PC 端管理后台）")
+@router.post(
+    "/copywriting",
+    summary="生成活动推文/宣传文案（AI 只出草稿，发布权在人）",
+    dependencies=[Depends(require_permissions(Permission.ACTIVITY_CREATE))],
+)
 def copywriting(payload: CopywritingRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
         text = llm_service.generate_copy(payload.topic, payload.style)

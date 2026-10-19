@@ -1,4 +1,4 @@
-"""Activity 相关 Schema。"""
+"""Activity 相关 Schema（第二阶段：审批 + 定级）。"""
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -30,6 +30,7 @@ class ActivityBase(RequestModel):
     capacity: int = Field(default=0, ge=0, description="0 表示不限名额")
     need_certificate: bool = False
     certificate_template_id: str = ""
+
 
 class ActivityCreate(ActivityBase):
     @model_validator(mode="after")
@@ -78,16 +79,38 @@ class ActivityOut(ORMModel, ActivityBase):
     checkin_count: int
     ai_copy: str
     status: str
+    level: str
+    submitted_at: datetime | None = None
+    reviewed_by: str
+    reviewed_by_name: str
+    reviewed_at: datetime | None = None
+    review_comment: str
     published_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class ActivityStatusChange(RequestModel):
-    target_status: Literal["draft", "published", "signup_closed", "ongoing", "finished", "cancelled"] = Field(
-        description="目标状态，须符合状态机流转规则"
+    target_status: Literal["signup_closed", "ongoing", "finished", "cancelled"] = Field(
+        description="仅运营类流转；提交审批用 /submit，审批用 /review"
     )
     reason: str = Field(default="", description="变更原因，取消活动时建议填写")
+
+
+class ActivitySubmitRequest(RequestModel):
+    remark: str = Field(default="", max_length=255, description="提交说明，供审批人参考")
+
+
+class ActivityReviewRequest(RequestModel):
+    approved: bool
+    level: Literal["school", "college"] | None = Field(default=None, description="审批通过时必填：校级 / 院级")
+    comment: str = Field(default="", max_length=255)
+
+    @model_validator(mode="after")
+    def require_level_when_approved(self):
+        if self.approved and self.level is None:
+            raise ValueError("审批通过时必须指定活动等级（校级/院级）")
+        return self
 
 
 class EmptyPayload(RequestModel):

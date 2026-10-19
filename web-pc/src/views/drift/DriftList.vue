@@ -10,7 +10,8 @@
       </div>
       <div>
         <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="dialogVisible = true">扫码上架</el-button>
+        <el-button v-if="store.can(PERM.DRIFT_PARTICIPATE)" type="primary" :icon="Plus" @click="dialogVisible = true">扫码上架</el-button>
+        <el-tag v-else type="info" effect="plain">访客只读</el-tag>
       </div>
     </div>
 
@@ -55,7 +56,7 @@
             <el-table-column prop="drift_location" label="交接地点" min-width="150" show-overflow-tooltip />
             <el-table-column prop="drift_count" label="流转次数" width="100" align="center" />
             <el-table-column prop="current_holder_id" label="当前持有者" width="150" show-overflow-tooltip />
-            <el-table-column label="操作" width="120" fixed="right">
+            <el-table-column v-if="store.can(PERM.DRIFT_PARTICIPATE)" label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button
                   text
@@ -144,8 +145,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { claimDriftBook, driftStats, listDriftBooks, listDriftRecords, putBookOnShelf } from '@/api/modules'
-import { DRIFT_STATUS, labelOf, typeOf } from '@/constants'
+import { useUserStore } from '@/store/user'
+import { DRIFT_STATUS, PERM, labelOf, typeOf } from '@/constants'
 import { formatDateTime } from '@/utils/format'
+
+const store = useUserStore()
 
 const activeTab = ref('pool')
 const loading = ref(false)

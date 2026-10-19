@@ -1,4 +1,4 @@
-/** 登录态与当前用户信息 */
+/** 登录态、当前用户与权限判断 */
 import { defineStore } from 'pinia'
 import * as userApi from '@/api/user'
 import { getToken, setToken } from '@/api/request'
@@ -11,10 +11,24 @@ export const useUserStore = defineStore('user', {
   getters: {
     isLoggedIn: (state) => Boolean(state.token),
     role: (state) => state.profile?.role ?? '',
-    /** 是否为管理端角色（图书馆老师 / 系统管理员） */
-    isStaff: (state) => ['librarian', 'admin'].includes(state.profile?.role ?? '')
+    roleLabel: (state) => state.profile?.role_label ?? '',
+    permissions: (state) => state.profile?.permissions ?? [],
+    /** 管理员（普通 + 系统） */
+    isStaff: (state) => ['admin', 'super_admin'].includes(state.profile?.role ?? ''),
+    isSuperAdmin: (state) => (state.profile?.role ?? '') === 'super_admin',
+    isVisitor: (state) => (state.profile?.role ?? '') === 'visitor'
   },
   actions: {
+    /** 权限判断：can('activity:review') / can([a,b]) 需全部命中 */
+    can(code) {
+      const codes = Array.isArray(code) ? code : [code]
+      const owned = this.profile?.permissions ?? []
+      return codes.every((item) => owned.includes(item))
+    },
+    canAny(codes) {
+      const owned = this.profile?.permissions ?? []
+      return codes.some((item) => owned.includes(item))
+    },
     async login(studentNo, password) {
       const data = await userApi.login(studentNo, password)
       this.token = data.token

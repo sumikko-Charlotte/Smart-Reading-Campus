@@ -4,7 +4,7 @@
       <div>
         <h2 class="page-title">{{ isEdit ? '编辑活动' : '新建活动' }}</h2>
         <p class="page-desc">
-          {{ isEdit ? '编辑后需手动流转状态，未发布的活动仅管理端可见' : '新建后默认为「草稿」，确认信息无误后再发布' }}
+          {{ isEdit ? '编辑后需重新提交审批（审批中的活动不可编辑）' : '新建后默认为「草稿」，确认信息无误后提交审批，由管理员定级（校级/院级）后发布' }}
         </p>
       </div>
       <div>
@@ -70,7 +70,7 @@
               <el-switch v-model="form.need_certificate" />
             </el-form-item>
             <el-form-item v-if="form.need_certificate" label="证书模板">
-              <el-input v-model="form.certificate_template_id" placeholder="模板 ID（第 2 轮实现模板管理）" />
+              <el-input v-model="form.certificate_template_id" placeholder="可留空；模板管理在后续阶段接入" />
             </el-form-item>
           </el-form>
         </div>
@@ -179,7 +179,7 @@ async function onSubmit() {
       router.push(`/activities/${route.params.id}`)
     } else {
       const data = await createActivity(buildPayload())
-      ElMessage.success('创建成功（当前为草稿状态）')
+      ElMessage.success('草稿已创建，可在活动列表「提交审批」')
       router.push(`/activities/${data.activity_id}`)
     }
   } finally {

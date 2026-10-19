@@ -6,9 +6,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
-from app.core.enums import BookSource, UserRole
+from app.core.enums import BookSource
+from app.core.permissions import Permission
 from app.core.response import CODE_NOT_FOUND, CODE_SERVER_ERROR, BizError, ok, page_result
-from app.core.security import CurrentUser, get_current_user, new_id, require_roles
+from app.core.security import CurrentUser, get_current_user, get_optional_user, new_id, require_permissions
 from app.db.base import get_db
 from app.db.models import AIConversation, Book
 from app.schemas.book import (
@@ -68,7 +69,7 @@ def get_by_isbn(isbn: str, db: Session = Depends(get_db)):
     return ok(BookOut.model_validate(row).model_dump())
 
 
-@router.post("", status_code=201, summary="录入图书（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.post("", status_code=201, summary="录入馆藏图书（管理端）", dependencies=[Depends(require_permissions(Permission.BOOK_MANAGE))])
 def create_book(payload: BookCreate, db: Session = Depends(get_db)):
     if payload.isbn and db.scalar(select(Book).where(Book.isbn == payload.isbn, Book.is_deleted.is_(False))):
         raise BizError(1001, "该 ISBN 已存在")
@@ -86,7 +87,7 @@ def get_book(book_id: str, db: Session = Depends(get_db)):
     return ok(BookOut.model_validate(_get_or_404(db, book_id)).model_dump())
 
 
-@router.patch("/{book_id}", summary="更新图书（管理端）", dependencies=[Depends(require_roles(UserRole.LIBRARIAN, UserRole.ADMIN))])
+@router.patch("/{book_id}", summary="更新馆藏图书（管理端）", dependencies=[Depends(require_permissions(Permission.BOOK_MANAGE))])
 def update_book(book_id: str, payload: BookUpdate, db: Session = Depends(get_db)):
     row = _get_or_404(db, book_id)
     updates = payload.model_dump(exclude_unset=True)
@@ -110,7 +111,11 @@ def update_book(book_id: str, payload: BookUpdate, db: Session = Depends(get_db)
     return ok(BookOut.model_validate(row).model_dump())
 
 
-@router.post("/{book_id}/ai-summary", summary="生成/刷新 AI 书目深度解读")
+@router.post(
+    "/{book_id}/ai-summary",
+    summary="生成/刷新 AI 书目深度解读",
+    dependencies=[Depends(require_permissions(Permission.AI_CHAT))],
+)
 def build_ai_summary(
     book_id: str,
     force_refresh: bool = Query(default=False, description="true 时忽略缓存重新生成"),
@@ -155,9 +160,20 @@ def build_ai_summary(
     )
 
 
-@router.post("/recommend", summary="AI 智能推荐（PC 端智能推荐门户）")
-def recommend_books(payload: RecommendRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """先按借阅热度选候选书，再由 DeepSeek 生成个性化推荐理由。"""
+@router.post(
+    "/recommend",
+    summary="AI 智能推荐（访客自动降级为 Mock，不调用真实模型）",
+    dependencies=[Depends(require_permissions(Permission.AI_RECOMMEND))],
+)
+def recommend_books(
+    payload: RecommendRequest,
+    current: CurrentUser = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """先按借阅热度选候选书，再由模型生成个性化推荐理由。
+
+    访客（匿名）不消耗真实模型额度：走确定性 Mock，并返回 degraded=true 供前端提示。
+    """
     rows = db.scalars(
         select(Book)
         .where(Book.is_deleted.is_(False), Book.source.in_([BookSource.LIBRARY.value, BookSource.BOTH.value]))
@@ -165,39 +181,49 @@ def recommend_books(payload: RecommendRequest, current: CurrentUser = Depends(ge
         .limit(payload.limit)
     ).all()
 
-    try:
-        reasons, tokens = llm_service.recommend_reasons(rows, payload.extra_prompt, payload.limit)
-    except LLMServiceError as exc:
-        raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
+    degraded = current.is_anonymous or current.is_visitor
+    if degraded:
+        reasons, tokens = llm_service.mock_recommend_reasons(rows, payload.extra_prompt), 0
+    else:
+        try:
+            reasons, tokens = llm_service.recommend_reasons(rows, payload.extra_prompt, payload.limit)
+        except LLMServiceError as exc:
+            raise BizError(CODE_SERVER_ERROR, str(exc), http_status=503) from exc
 
     items = [RecommendItem(book=BookOut.model_validate(book), reason=reasons[book.book_id]) for book in rows]
     generated_at = datetime.now(timezone.utc).isoformat()
     recommendation_text = "\n".join(f"《{item.book.title}》：{item.reason}" for item in items)
-    conv = AIConversation(
-        user_id=current.user_id,
-        scene="recommend",
-        title="AI 智能推荐",
-        book_id=None,
-        model=llm_service.settings.LLM_MODEL,
-        messages=[
-            {
-                "message_id": new_id("message"),
-                "role": "assistant",
-                "content": recommendation_text,
-                "tokens": tokens,
-                "created_at": generated_at,
-            }
-        ],
-        message_count=1,
-        prompt_version=llm_service.settings.PROMPT_VERSION,
-    )
-    db.add(conv)
-    db.commit()
+
+    conversation_id = ""
+    if not degraded:
+        conv = AIConversation(
+            user_id=current.user_id,
+            scene="recommend",
+            title="AI 智能推荐",
+            book_id=None,
+            model=llm_service.settings.LLM_MODEL,
+            messages=[
+                {
+                    "message_id": new_id("message"),
+                    "role": "assistant",
+                    "content": recommendation_text,
+                    "tokens": tokens,
+                    "created_at": generated_at,
+                }
+            ],
+            message_count=1,
+            prompt_version=llm_service.settings.PROMPT_VERSION,
+        )
+        db.add(conv)
+        db.commit()
+        conversation_id = conv.conversation_id
+
     return ok(
         RecommendResponse(
-            conversation_id=conv.conversation_id,
+            conversation_id=conversation_id,
             items=items,
-            model=llm_service.settings.LLM_MODEL,
+            model="mock" if degraded else llm_service.settings.LLM_MODEL,
             prompt_version=llm_service.settings.PROMPT_VERSION,
         ).model_dump()
+        | {"degraded": degraded}
     )

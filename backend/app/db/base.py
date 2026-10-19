@@ -24,12 +24,47 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _ensure_columns(connection, table: str, columns: dict[str, str]) -> list[str]:
+    """轻量迁移：缺列就 ALTER TABLE ADD COLUMN（SQLite 只支持加列，够本项目用）。"""
+    existing = {column["name"] for column in inspect(engine).get_columns(table)}
+    added: list[str] = []
+    for name, ddl in columns.items():
+        if name in existing:
+            continue
+        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        added.append(name)
+    return added
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401  确保模型已注册
 
     Base.metadata.create_all(bind=engine)
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
+            # ---- 第二阶段的增量列（权限 / 审批定级）----
+            _ensure_columns(
+                connection,
+                "users",
+                {
+                    "granted_permissions": "TEXT NOT NULL DEFAULT '[]'",
+                    "revoked_permissions": "TEXT NOT NULL DEFAULT '[]'",
+                },
+            )
+            _ensure_columns(
+                connection,
+                "activities",
+                {
+                    "level": "VARCHAR(16) NOT NULL DEFAULT 'none'",
+                    "submitted_at": "DATETIME",
+                    "reviewed_by": "VARCHAR(24) NOT NULL DEFAULT ''",
+                    "reviewed_by_name": "VARCHAR(64) NOT NULL DEFAULT ''",
+                    "reviewed_at": "DATETIME",
+                    "review_comment": "VARCHAR(255) NOT NULL DEFAULT ''",
+                },
+            )
+            # 旧角色 librarian 并入普通管理员（第二阶段只有 3 类角色）
+            connection.execute(text("UPDATE users SET role = 'admin' WHERE role = 'librarian'"))
             columns = {column["name"] for column in inspect(engine).get_columns("drift_records")}
             if "status" in columns and "drift_status" not in columns:
                 connection.execute(

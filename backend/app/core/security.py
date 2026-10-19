@@ -1,7 +1,10 @@
-"""主键生成、鉴权与 RBAC 骨架、手机号/邮箱脱敏。
+"""主键生成、鉴权、权限校验依赖、手机号/邮箱脱敏。
 
-本轮为骨架实现：登录校验用「学号 + 固定演示密码」，token 用 HMAC 签名串，
-第 2 轮替换为真实 JWT（PyJWT）即可，接口签名保持不变。
+权限模型（第二阶段）
+------------------
+- 角色只提供**默认权限**，接口一律校验权限点（`require_permissions`）
+- 有效权限 = 角色默认 - 收回 + 额外授予，由 `app.core.permissions` 计算
+- 支持可选登录：访客不带 token 也能访问只读接口（`get_optional_user`）
 """
 import base64
 import hashlib
@@ -11,10 +14,13 @@ import time
 import uuid
 
 from fastapi import Depends, Header
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.enums import UserRole
+from app.core.enums import UserRole, UserStatus
+from app.core.permissions import effective_permissions
 from app.core.response import CODE_FORBIDDEN, CODE_UNAUTHORIZED, BizError
+from app.db.base import get_db
 
 ID_PREFIXES = {
     "user": "usr",
@@ -25,6 +31,10 @@ ID_PREFIXES = {
     "drift": "drf",
     "signup": "sgn",
     "report": "rpt",
+    "certificate": "crt",
+    "summary": "sum",
+    "notification": "ntf",
+    "permission_log": "plg",
 }
 
 
@@ -60,30 +70,130 @@ def parse_token(token: str) -> dict:
 
 
 class CurrentUser:
-    """最小可用上下文，后续可从数据库补全完整 User 对象。"""
+    """当前请求主体：既可能是登录用户，也可能是匿名访客（visitor）。"""
 
-    def __init__(self, user_id: str, role: str):
+    def __init__(
+        self,
+        user_id: str,
+        role: str,
+        permissions: set[str] | frozenset[str] | None = None,
+        name: str = "",
+        student_no: str = "",
+        is_anonymous: bool = False,
+    ):
         self.user_id = user_id
         self.role = role
+        self.name = name
+        self.student_no = student_no
+        self.is_anonymous = is_anonymous
+        self.permissions = frozenset(permissions if permissions is not None else effective_permissions(role))
+
+    def can(self, *codes: str) -> bool:
+        """全部命中才算有权限（与 require_permissions 默认 all 语义一致）。"""
+        return all(code in self.permissions for code in codes)
+
+    def can_any(self, *codes: str) -> bool:
+        return any(code in self.permissions for code in codes)
 
     @property
-    def is_admin(self) -> bool:
-        return self.role == UserRole.ADMIN.value
+    def is_staff(self) -> bool:
+        return self.role in (UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value)
+
+    @property
+    def is_super_admin(self) -> bool:
+        return self.role == UserRole.SUPER_ADMIN.value
+
+    @property
+    def is_visitor(self) -> bool:
+        return self.role == UserRole.VISITOR.value
 
 
-async def get_current_user(authorization: str | None = Header(default=None)) -> CurrentUser:
-    """从 Authorization: Bearer <token> 解析当前用户（允许匿名透传场景自行放开）。"""
+VISITOR = CurrentUser(
+    user_id="",
+    role=UserRole.VISITOR.value,
+    permissions=effective_permissions(UserRole.VISITOR.value),
+    name="访客",
+    is_anonymous=True,
+)
+
+
+def _load_user(token: str, db: Session) -> CurrentUser:
+    """token 里的 role 只作兜底，真实角色与权限一律以数据库为准（改权限即时生效）。"""
+    from app.db.models import User  # 延迟导入，避免 models -> security 的循环依赖
+
+    payload = parse_token(token)
+    user = db.get(User, payload["sub"])
+    if user is None or user.is_deleted:
+        raise BizError(CODE_UNAUTHORIZED, "账号不存在或已注销")
+    if user.status != UserStatus.ACTIVE.value:
+        raise BizError(CODE_UNAUTHORIZED, "账号已被禁用，请联系管理员")
+    return CurrentUser(
+        user_id=user.user_id,
+        role=user.role,
+        permissions=effective_permissions(user.role, user.granted_permissions, user.revoked_permissions),
+        name=user.name,
+        student_no=user.student_no,
+    )
+
+
+def _auth_token(authorization: str | None) -> str | None:
     if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    return authorization.split(" ", 1)[1].strip()
+
+
+async def get_current_user(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> CurrentUser:
+    """必须登录：未带 token 直接 401。"""
+    token = _auth_token(authorization)
+    if not token:
         raise BizError(CODE_UNAUTHORIZED, "未登录或登录已失效")
-    payload = parse_token(authorization.split(" ", 1)[1].strip())
-    return CurrentUser(user_id=payload["sub"], role=payload["role"])
+    return _load_user(token, db)
+
+
+async def get_optional_user(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> CurrentUser:
+    """可选登录：无 token 返回访客上下文，用于活动/漂流/AI 推荐的公开浏览。"""
+    token = _auth_token(authorization)
+    if not token:
+        return VISITOR
+    return _load_user(token, db)
+
+
+def require_permissions(*codes: str, mode: str = "all"):
+    """权限依赖工厂。
+
+    用法：`dependencies=[Depends(require_permissions(Permission.ACTIVITY_REVIEW))]`
+    """
+
+    wanted = tuple(c.value if hasattr(c, "value") else c for c in codes)
+
+    async def _checker(user: CurrentUser = Depends(get_optional_user)) -> CurrentUser:
+        hit = all(code in user.permissions for code in wanted) if mode == "all" else any(
+            code in user.permissions for code in wanted
+        )
+        if not hit:
+            if user.is_anonymous:
+                raise BizError(CODE_UNAUTHORIZED, "该操作需要登录后使用", http_status=401)
+            raise BizError(CODE_FORBIDDEN, "当前账号未被授予该操作权限", http_status=403)
+        return user
+
+    return _checker
 
 
 def require_roles(*roles: str):
-    """RBAC 依赖工厂：@router.get(..., dependencies=[Depends(require_roles('admin'))])"""
+    """兼容旧代码的角色校验；新代码请优先使用 require_permissions。"""
 
-    async def _checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-        if user.role not in {r.value if hasattr(r, "value") else r for r in roles}:
+    allowed = {r.value if hasattr(r, "value") else r for r in roles}
+
+    async def _checker(user: CurrentUser = Depends(get_optional_user)) -> CurrentUser:
+        if user.role not in allowed:
+            if user.is_anonymous:
+                raise BizError(CODE_UNAUTHORIZED, "该操作需要登录后使用", http_status=401)
             raise BizError(CODE_FORBIDDEN, "当前角色无权访问该资源", http_status=403)
         return user
 

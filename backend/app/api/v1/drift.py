@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.core.enums import BookSource, DriftStatus
+from app.core.permissions import Permission
 from app.core.response import CODE_ILLEGAL_STATE, CODE_NOT_FOUND, BizError, ok, page_result
-from app.core.security import CurrentUser, get_current_user, new_id
+from app.core.security import CurrentUser, get_current_user, new_id, require_permissions
 from app.db.base import get_db
 from app.db.models import Book, DriftRecord, User
 from app.schemas.book import BookOut
@@ -31,7 +32,7 @@ class DriftOnShelfRequest(RequestModel):
         return self
 
 
-@router.get("/books", summary="漂流池列表")
+@router.get("/books", summary="漂流池列表（访客可读）", dependencies=[Depends(require_permissions(Permission.DRIFT_VIEW))])
 def list_drift_books(
     pq: PageQuery = Depends(page_query),
     drift_status: str = Query(default="", description="idle/reserved/in_transit/claimed/closed"),
@@ -65,7 +66,11 @@ def _drift_book_out(record: DriftRecord, book: Book) -> dict:
     }
 
 
-@router.post("/books", summary="扫码上架一本漂流书")
+@router.post(
+    "/books",
+    summary="扫码上架一本漂流书",
+    dependencies=[Depends(require_permissions(Permission.DRIFT_PARTICIPATE))],
+)
 def put_on_shelf(payload: DriftOnShelfRequest, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     isbn = payload.isbn.replace("-", "").strip()
     owner_id = current.user_id
@@ -101,7 +106,11 @@ def put_on_shelf(payload: DriftOnShelfRequest, current: CurrentUser = Depends(ge
     return ok({"book": BookOut.model_validate(book).model_dump(), "drift_id": record.drift_id})
 
 
-@router.post("/records/{drift_id}/claim", summary="申领单册漂流书")
+@router.post(
+    "/records/{drift_id}/claim",
+    summary="申领单册漂流书",
+    dependencies=[Depends(require_permissions(Permission.DRIFT_PARTICIPATE))],
+)
 def claim(drift_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     record = db.get(DriftRecord, drift_id)
     if record is None or record.is_deleted:
@@ -132,7 +141,7 @@ def claim(drift_id: str, current: CurrentUser = Depends(get_current_user), db: S
     )
 
 
-@router.get("/records", summary="漂流流转记录")
+@router.get("/records", summary="漂流流转记录", dependencies=[Depends(require_permissions(Permission.DRIFT_VIEW))])
 def list_records(
     pq: PageQuery = Depends(page_query),
     book_id: str = Query(default=""),
@@ -160,7 +169,7 @@ def list_records(
     return ok(page_result(items, pq.page, pq.page_size, total))
 
 
-@router.get("/stats", summary="漂流数据概览（PC 端管理视图卡片）")
+@router.get("/stats", summary="漂流数据概览（PC 端管理视图卡片）", dependencies=[Depends(require_permissions(Permission.DRIFT_VIEW))])
 def drift_stats(db: Session = Depends(get_db)):
     base = select(func.count()).select_from(DriftRecord).where(DriftRecord.is_deleted.is_(False))
     return ok(
@@ -169,3 +178,20 @@ def drift_stats(db: Session = Depends(get_db)):
             "by_status": {s.value: db.scalar(base.where(DriftRecord.drift_status == s.value)) or 0 for s in DriftStatus},
         }
     )
+
+
+@router.post(
+    "/records/{drift_id}/close",
+    summary="下架漂流书（漂流运营管理）",
+    dependencies=[Depends(require_permissions(Permission.DRIFT_MANAGE))],
+)
+def close_record(drift_id: str, db: Session = Depends(get_db)):
+    record = db.get(DriftRecord, drift_id)
+    if record is None or record.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "漂流记录不存在")
+    if record.drift_status == DriftStatus.CLOSED.value:
+        raise BizError(CODE_ILLEGAL_STATE, "该漂流书已下架")
+    record.drift_status = DriftStatus.CLOSED.value
+    db.commit()
+    db.refresh(record)
+    return ok({"drift_id": record.drift_id, "drift_status": record.drift_status})

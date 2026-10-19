@@ -50,9 +50,12 @@ const rules = {
 }
 
 const demoAccounts = [
-  { no: 'T2009', label: '图书馆老师' },
   { no: 'admin', label: '系统管理员' },
-  { no: '2025211987', label: '学生（Alice）' }
+  { no: 'T2009', label: '管理员（可审批）' },
+  { no: 'T2010', label: '管理员（无审批权）' },
+  { no: '2025211995', label: '学生·可申办活动' },
+  { no: '2025211987', label: '学生（Alice）' },
+  { no: 'guest', label: '访客' }
 ]
 
 function fill(no) {

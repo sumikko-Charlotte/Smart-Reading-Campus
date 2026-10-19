@@ -5,7 +5,7 @@
         <span class="brand-logo">智</span>
         <div class="brand-text">
           <strong>智阅校园</strong>
-          <small>PC 端管理平台</small>
+          <small>PC 端平台 · 第二阶段</small>
         </div>
       </div>
 
@@ -17,7 +17,9 @@
       </el-menu>
 
       <div class="aside-foot">
-        <el-tag size="small" type="success" effect="plain">第 1 轮 · 骨架版</el-tag>
+        <el-tag size="small" effect="plain" :type="store.isVisitor ? 'info' : 'success'">
+          {{ store.isVisitor ? '访客只读模式' : store.roleLabel }}
+        </el-tag>
       </div>
     </el-aside>
 
@@ -37,17 +39,21 @@
             </el-tag>
           </el-tooltip>
 
+          <el-badge :value="unread" :hidden="!unread" :max="99">
+            <el-button text :icon="Bell" @click="$router.push('/notifications')">消息</el-button>
+          </el-badge>
+
           <el-dropdown @command="onCommand">
             <span class="user-info">
               <el-avatar :size="28" :src="store.profile?.avatar_url || ''">
                 {{ store.profile?.name?.slice(0, 1) || 'U' }}
               </el-avatar>
               <span>{{ store.profile?.name || '未登录' }}</span>
-              <el-tag size="small" effect="plain">{{ roleLabel }}</el-tag>
+              <el-tag size="small" effect="plain" :type="roleType">{{ store.roleLabel || '—' }}</el-tag>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="profile">个人信息</el-dropdown-item>
+                <el-dropdown-item command="permissions">我的权限（{{ permissionCount }} 项）</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -56,6 +62,14 @@
       </el-header>
 
       <el-main class="layout-main">
+        <el-alert
+          v-if="store.isVisitor"
+          class="visitor-tip"
+          type="info"
+          :closable="false"
+          show-icon
+          title="访客模式：可浏览活动、查看漂流池、使用 AI 推荐（演示数据），不能报名或参与漂流。"
+        />
         <router-view v-slot="{ Component }">
           <keep-alive :max="5">
             <component :is="Component" />
@@ -70,26 +84,35 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Bell } from '@element-plus/icons-vue'
 import { useUserStore } from '@/store/user'
 import { health } from '@/api/user'
-import { USER_ROLE, labelOf } from '@/constants'
+import { listNotifications } from '@/api/summary'
+import { PERM, USER_ROLE, typeOf } from '@/constants'
 
 const route = useRoute()
 const router = useRouter()
 const store = useUserStore()
 const healthOk = ref(false)
+const unread = ref(0)
 
 const menus = [
-  { path: '/dashboard', title: '首页概览', icon: 'Odometer' },
-  { path: '/activities', title: '活动管理', icon: 'Calendar' },
-  { path: '/ai/recommend', title: 'AI 智能推荐', icon: 'MagicStick' },
-  { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound' },
-  { path: '/drift', title: '图书漂流', icon: 'Van' }
+  { path: '/dashboard', title: '首页概览', icon: 'Odometer', permission: PERM.ACTIVITY_VIEW },
+  { path: '/activities', title: '活动', icon: 'Calendar', permission: PERM.ACTIVITY_VIEW },
+  { path: '/activities/review', title: '活动审批', icon: 'Stamp', permission: PERM.ACTIVITY_REVIEW },
+  { path: '/summaries', title: '活动回顾', icon: 'Notebook', permission: PERM.ACTIVITY_VIEW },
+  { path: '/certificates', title: '我的证书', icon: 'Medal', permission: PERM.CERTIFICATE_VIEW },
+  { path: '/certificates/manage', title: '证书管理', icon: 'Files', permission: PERM.CERTIFICATE_ISSUE },
+  { path: '/ai/recommend', title: 'AI 智能推荐', icon: 'MagicStick', permission: PERM.AI_RECOMMEND },
+  { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound', permission: PERM.AI_CHAT },
+  { path: '/drift', title: '图书漂流', icon: 'Van', permission: PERM.DRIFT_VIEW },
+  { path: '/system/users', title: '用户与权限', icon: 'User', permission: PERM.SYSTEM_PERMISSION }
 ]
 
-const visibleMenus = computed(() => menus.filter((m) => !m.roles || m.roles.includes(store.role)))
+const visibleMenus = computed(() => menus.filter((m) => store.can(m.permission)))
 const activeMenu = computed(() => route.meta.activeMenu || route.path)
-const roleLabel = computed(() => labelOf(USER_ROLE, store.role))
+const roleType = computed(() => typeOf(USER_ROLE, store.role))
+const permissionCount = computed(() => store.permissions.length)
 
 onMounted(async () => {
   try {
@@ -98,11 +121,21 @@ onMounted(async () => {
   } catch {
     healthOk.value = false
   }
+  try {
+    const data = await listNotifications({ page: 1, page_size: 5 })
+    unread.value = data.total
+  } catch {
+    unread.value = 0
+  }
 })
 
 async function onCommand(command) {
-  if (command === 'profile') {
-    ElMessage.info('个人信息页在第 2 轮实现（本轮用户信息已可从 /users/me 获取）')
+  if (command === 'permissions') {
+    ElMessageBox.alert(
+      (store.permissions || []).map((code) => `· ${code}`).join('\n') || '暂无权限',
+      `我的权限（${permissionCount.value} 项）`,
+      { customStyle: { whiteSpace: 'pre-wrap' } }
+    )
     return
   }
   await ElMessageBox.confirm('确认退出登录吗？', '提示', { type: 'warning' })
@@ -157,6 +190,7 @@ async function onCommand(command) {
 .layout-menu {
   border-right: none;
   flex: 1;
+  overflow-y: auto;
 }
 
 .aside-foot {
@@ -193,5 +227,9 @@ async function onCommand(command) {
 .layout-main {
   padding: 0;
   overflow-y: auto;
+}
+
+.visitor-tip {
+  margin: 16px 16px 0;
 }
 </style>

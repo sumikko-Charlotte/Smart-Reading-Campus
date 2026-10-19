@@ -25,3 +25,11 @@ Thumbs.db
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+# ---------- 虚拟环境（多版本） ----------
+.venv*/
+*.egg-info/
+
+# ---------- 本地数据库与临时产物 ----------
+*.sqlite3
+tmp_*.pdf

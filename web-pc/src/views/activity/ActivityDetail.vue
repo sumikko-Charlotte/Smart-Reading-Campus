@@ -12,9 +12,21 @@
       </div>
       <div>
         <el-button @click="$router.push('/activities')">返回列表</el-button>
-        <el-button v-if="store.isStaff" type="primary" :disabled="detail.status === 'finished'" @click="$router.push(`/activities/${detail.activity_id}/edit`)">
-          编辑活动
-        </el-button>
+        <el-button
+          v-if="canOperate && !['finished', 'pending_review'].includes(detail.status)"
+          type="primary"
+          @click="$router.push(`/activities/${detail.activity_id}/edit`)"
+        >编辑活动</el-button>
+        <el-button
+          v-if="canOperate && ['draft', 'rejected', 'cancelled'].includes(detail.status)"
+          type="warning"
+          @click="onSubmitReview"
+        >提交审批</el-button>
+        <el-button
+          v-if="canWriteSummary"
+          type="success"
+          @click="$router.push(`/activities/${detail.activity_id}/summary`)"
+        >{{ hasSummary ? '查看/编辑总结' : '撰写总结' }}</el-button>
       </div>
     </div>
 
@@ -28,8 +40,17 @@
             <el-descriptions-item label="报名时间">{{ formatRange(detail.signup_start_at, detail.signup_end_at) }}</el-descriptions-item>
             <el-descriptions-item label="主办方">{{ detail.organizer_name || '—' }}</el-descriptions-item>
             <el-descriptions-item label="名额">{{ detail.capacity || '不限' }}</el-descriptions-item>
-            <el-descriptions-item label="电子证书">{{ detail.need_certificate ? '自动颁发' : '不颁发' }}</el-descriptions-item>
+            <el-descriptions-item label="电子证书">{{ detail.need_certificate ? '活动结束后颁发' : '不颁发' }}</el-descriptions-item>
+            <el-descriptions-item label="活动等级">
+              <el-tag v-if="detail.level && detail.level !== 'none'" :type="typeOf(ACTIVITY_LEVEL, detail.level)" effect="plain">
+                {{ labelOf(ACTIVITY_LEVEL, detail.level) }}
+              </el-tag>
+              <span v-else class="text-muted">未定级</span>
+            </el-descriptions-item>
             <el-descriptions-item label="发布时间">{{ formatDateTime(detail.published_at) }}</el-descriptions-item>
+            <el-descriptions-item v-if="detail.review_comment" label="审批意见" :span="2">
+              {{ detail.review_comment }}（{{ detail.reviewed_by_name }}）
+            </el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatDateTime(detail.created_at, true) }}</el-descriptions-item>
             <el-descriptions-item label="更新时间">{{ formatDateTime(detail.updated_at, true) }}</el-descriptions-item>
           </el-descriptions>
@@ -83,33 +104,68 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { getActivity } from '@/api/activity'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getActivity, submitActivity } from '@/api/activity'
+import { getActivitySummary } from '@/api/summary'
 import { useUserStore } from '@/store/user'
-import { ACTIVITY_CATEGORY, ACTIVITY_STATUS, labelOf, typeOf } from '@/constants'
+import { ACTIVITY_CATEGORY, ACTIVITY_LEVEL, ACTIVITY_STATUS, PERM, labelOf, typeOf } from '@/constants'
 import { formatDateTime, formatRange } from '@/utils/format'
 
 const route = useRoute()
 const store = useUserStore()
 const loading = ref(false)
 const detail = ref({})
+const hasSummary = ref(false)
+
+const canOperate = computed(() => {
+  if (store.can(PERM.ACTIVITY_MANAGE_ALL)) return true
+  return detail.value.organizer_id === store.profile?.user_id && store.can(PERM.ACTIVITY_CREATE)
+})
+
+const canWriteSummary = computed(() => {
+  if (!['ongoing', 'finished'].includes(detail.value.status)) return false
+  return store.can(PERM.ACTIVITY_SUMMARY) || (detail.value.organizer_id === store.profile?.user_id && store.can(PERM.ACTIVITY_CREATE))
+})
 
 const signupPercent = computed(() => {
   if (!detail.value.capacity) return detail.value.signup_count ? 10 : 0
   return Math.min(100, Math.round(((detail.value.signup_count || 0) / detail.value.capacity) * 100))
 })
 
-// 状态机主干（不含 cancelled，取消是旁支）
-const FLOW_ORDER = ['draft', 'published', 'signup_closed', 'ongoing', 'finished']
+// 状态主干（不含驳回/取消旁支；审批在「活动审批」页操作）
+const FLOW_ORDER = ['draft', 'pending_review', 'published', 'signup_closed', 'ongoing', 'finished']
 const statusFlow = computed(() =>
   ACTIVITY_STATUS.filter((s) => FLOW_ORDER.includes(s.value))
     .sort((a, b) => FLOW_ORDER.indexOf(a.value) - FLOW_ORDER.indexOf(b.value))
     .map((s) => ({ ...s, type: s.value === detail.value.status ? typeOf(ACTIVITY_STATUS, s.value) : 'info' }))
 )
 
+async function onSubmitReview() {
+  try {
+    const { value } = await ElMessageBox.prompt('提交管理员审批，审批通过后将定级发布。可填写提交说明：', '提交审批', {
+      type: 'info',
+      inputPlaceholder: '选填'
+    })
+    await submitActivity(detail.value.activity_id, value || '')
+    ElMessage.success('已提交审批')
+    detail.value = await getActivity(route.params.id)
+  } catch (err) {
+    if (err !== 'cancel') {
+      /* 统一提示 */
+    }
+  }
+}
+
 onMounted(async () => {
   loading.value = true
   try {
     detail.value = await getActivity(route.params.id)
+    try {
+      await getActivitySummary(route.params.id)
+      hasSummary.value = true
+    } catch {
+      hasSummary.value = false
+    }
   } finally {
     loading.value = false
   }

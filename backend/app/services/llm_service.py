@@ -163,6 +163,32 @@ def generate_copy(topic: str, style: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------- 降级 Mock
+
+
+def mock_recommend_reasons(books: list[Book], extra: str = "") -> dict[str, str]:
+    """访客降级推荐：不调用真实模型，用书目自身字段拼确定性理由。
+
+    注意：理由只描述**书**，不出现「和你相似的同学」「你可能认识的人」这类
+    可逆指向，符合脱敏数据的使用边界。
+    """
+    preference = (extra or "").strip() or "通识阅读"
+    openers = [
+        "借阅热度靠前，",
+        "主题与你的偏好贴合，",
+        "篇幅适中，适合课后翻读，",
+        "读者评价稳定，",
+        "入门友好，",
+        "视角独特，",
+    ]
+    reasons: dict[str, str] = {}
+    for index, book in enumerate(books):
+        tag = (book.tags or [book.category or "综合"])[0]
+        reason = f"{openers[index % len(openers)]}「{tag}」方向契合「{preference}」，可在馆藏区直接取阅。"
+        reasons[book.book_id] = reason[:60]
+    return reasons
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 

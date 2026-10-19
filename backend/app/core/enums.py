@@ -8,9 +8,12 @@ class StrEnum(str, Enum):
 
 
 class UserRole(StrEnum):
-    STUDENT = "student"
-    LIBRARIAN = "librarian"
-    ADMIN = "admin"
+    """三类角色，其中管理员分两级：普通管理员 / 系统管理员。"""
+
+    VISITOR = "visitor"          # 访客：只读浏览 / AI 推荐走降级 Mock
+    STUDENT = "student"          # 学生：报名、漂流、证书；按需授予申办活动
+    ADMIN = "admin"              # 普通管理员：申办/审批/漂流运营/发证书
+    SUPER_ADMIN = "super_admin"  # 系统管理员：全部权限 + 权限分配
 
 
 class UserStatus(StrEnum):
@@ -28,17 +31,35 @@ class ActivityCategory(StrEnum):
 
 
 class ActivityStatus(StrEnum):
-    DRAFT = "draft"
-    PUBLISHED = "published"
+    DRAFT = "draft"                    # 草稿（申办人可编辑）
+    PENDING_REVIEW = "pending_review"  # 待审批（已提交，等待管理员审核）
+    REJECTED = "rejected"              # 审批驳回（可修改后重新提交）
+    PUBLISHED = "published"            # 已发布（审批通过，开放报名）
     SIGNUP_CLOSED = "signup_closed"
     ONGOING = "ongoing"
     FINISHED = "finished"
     CANCELLED = "cancelled"
 
 
+class ActivityLevel(StrEnum):
+    """活动等级：审批时确定，决定证书盖章口径。"""
+
+    NONE = "none"        # 未定级（草稿/待审批）
+    COLLEGE = "college"  # 院级
+    SCHOOL = "school"    # 校级
+
+
+ACTIVITY_LEVEL_LABELS: dict[str, str] = {
+    ActivityLevel.NONE: "未定级",
+    ActivityLevel.COLLEGE: "院级",
+    ActivityLevel.SCHOOL: "校级",
+}
+
 # 活动状态合法流转表：非法流转统一返回 code=1005
 ACTIVITY_STATUS_TRANSITIONS: dict[str, set[str]] = {
-    ActivityStatus.DRAFT: {ActivityStatus.PUBLISHED, ActivityStatus.CANCELLED},
+    ActivityStatus.DRAFT: {ActivityStatus.PENDING_REVIEW, ActivityStatus.CANCELLED},
+    ActivityStatus.PENDING_REVIEW: {ActivityStatus.PUBLISHED, ActivityStatus.REJECTED, ActivityStatus.CANCELLED},
+    ActivityStatus.REJECTED: {ActivityStatus.PENDING_REVIEW, ActivityStatus.CANCELLED},
     ActivityStatus.PUBLISHED: {ActivityStatus.SIGNUP_CLOSED, ActivityStatus.CANCELLED},
     ActivityStatus.SIGNUP_CLOSED: {ActivityStatus.ONGOING, ActivityStatus.CANCELLED},
     ActivityStatus.ONGOING: {ActivityStatus.FINISHED},
@@ -46,8 +67,18 @@ ACTIVITY_STATUS_TRANSITIONS: dict[str, set[str]] = {
     ActivityStatus.CANCELLED: set(),
 }
 
+#: 只有这些状态属于「对外可见」，访客/学生不应看到草稿、待审批、驳回
+ACTIVITY_PUBLIC_STATUSES = {
+    ActivityStatus.PUBLISHED,
+    ActivityStatus.SIGNUP_CLOSED,
+    ActivityStatus.ONGOING,
+    ActivityStatus.FINISHED,
+}
+
 ACTIVITY_STATUS_LABELS: dict[str, str] = {
     ActivityStatus.DRAFT: "草稿",
+    ActivityStatus.PENDING_REVIEW: "待审批",
+    ActivityStatus.REJECTED: "审批驳回",
     ActivityStatus.PUBLISHED: "已发布",
     ActivityStatus.SIGNUP_CLOSED: "报名截止",
     ActivityStatus.ONGOING: "进行中",
@@ -75,6 +106,7 @@ class ConversationScene(StrEnum):
     RECOMMEND = "recommend"
     QA = "qa"
     COPYWRITING = "copywriting"
+    ACTIVITY_SUMMARY = "activity_summary"
 
 
 class ConversationStatus(StrEnum):
@@ -89,9 +121,26 @@ class MessageRole(StrEnum):
 
 
 class SignupStatus(StrEnum):
-    """活动报名状态（第 2 轮启用，先占位）"""
+    """活动报名状态"""
 
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+
+
+class CertificateStatus(StrEnum):
+    ISSUED = "issued"
+    REVOKED = "revoked"
+
+
+class SummaryStatus(StrEnum):
+    DRAFT = "draft"
+    PUBLISHED = "published"
+
+
+class NotificationType(StrEnum):
+    ACTIVITY_SUMMARY = "activity_summary"  # 活动总结推送
+    ACTIVITY_PUBLISHED = "activity_published"
+    CERTIFICATE_ISSUED = "certificate_issued"
+    SYSTEM = "system"

@@ -2,8 +2,8 @@
   <div class="page">
     <div class="page-header">
       <div>
-        <h2 class="page-title">活动管理</h2>
-        <p class="page-desc">查看老师发布的活动，以及你的报名和签到记录</p>
+        <h2 class="page-title">活动</h2>
+        <p class="page-desc">浏览平台发布的阅读推广活动{{ store.can(PERM.ACTIVITY_SIGNUP) ? '，报名参加并积累第二课堂证书' : '' }}</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
     </div>
@@ -24,7 +24,7 @@
     </div>
 
     <el-tabs v-model="activeTab" class="activity-tabs">
-      <el-tab-pane label="老师发布" name="announcements">
+      <el-tab-pane :label="store.can(PERM.ACTIVITY_SIGNUP) ? '可报名活动' : '活动通知'" name="announcements">
         <div class="list-heading">
           <span>活动通知</span>
           <span class="text-muted">按活动开始时间排序</span>
@@ -70,7 +70,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane :label="`我的参与 (${myTotal})`" name="mine">
+      <el-tab-pane v-if="store.can(PERM.ACTIVITY_SIGNUP)" :label="`我的参与 (${myTotal})`" name="mine">
         <div class="list-heading">
           <span>参与记录</span>
           <span class="text-muted">签到状态以现场核验记录为准</span>
@@ -116,9 +116,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { listActivities, listMyActivities, signupActivity } from '@/api/activity'
-import { ACTIVITY_CATEGORY, ACTIVITY_STATUS, labelOf, typeOf } from '@/constants'
+import { useUserStore } from '@/store/user'
+import { ACTIVITY_CATEGORY, ACTIVITY_STATUS, PERM, labelOf, typeOf } from '@/constants'
 import { formatDateTime } from '@/utils/format'
 
+const store = useUserStore()
 const router = useRouter()
 const loading = ref(false)
 const signingId = ref('')
@@ -131,6 +133,7 @@ const checkinCount = ref(0)
 const myActivityIds = computed(() => new Set(myActivities.value.map((item) => item.activity_id)))
 
 function canSignup(activity) {
+  if (!store.can(PERM.ACTIVITY_SIGNUP)) return false
   if (activity.status !== 'published' || myActivityIds.value.has(activity.activity_id)) return false
   const now = Date.now()
   const signupStart = activity.signup_start_at ? Date.parse(activity.signup_start_at) : 0
@@ -146,15 +149,14 @@ function signupStatusLabel(status) {
 async function refresh() {
   loading.value = true
   try {
-    const [activityData, myData] = await Promise.all([
-      listActivities({ page: 1, page_size: 100, order_by: 'start_at', order: 'asc' }),
-      listMyActivities({ page: 1, page_size: 100 })
-    ])
+    const requests = [listActivities({ page: 1, page_size: 100, order_by: 'start_at', order: 'asc' })]
+    if (store.can(PERM.ACTIVITY_SIGNUP)) requests.push(listMyActivities({ page: 1, page_size: 100 }))
+    const [activityData, myData] = await Promise.all(requests)
     activities.value = activityData.list
     activityTotal.value = activityData.total
-    myActivities.value = myData.list
-    myTotal.value = myData.total
-    checkinCount.value = myData.checkin_count
+    myActivities.value = myData?.list ?? []
+    myTotal.value = myData?.total ?? 0
+    checkinCount.value = myData?.checkin_count ?? 0
   } finally {
     loading.value = false
   }
