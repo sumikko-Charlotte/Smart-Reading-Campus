@@ -13,24 +13,33 @@ from app.api.v1.deps import page_query
 from app.core.config import settings
 from app.core.enums import UserRole, UserStatus
 from app.core.permissions import ROLE_LABELS, effective_permissions
-from app.core.response import CODE_NOT_FOUND, CODE_UNAUTHORIZED, BizError, ok, page_result
+from app.core.response import CODE_NOT_FOUND, CODE_PARAM_ERROR, CODE_UNAUTHORIZED, BizError, ok, page_result
 from app.core.security import (
     CurrentUser,
+    check_login_password,
     create_token,
     get_current_user,
+    hash_password,
     mask_email,
     mask_phone,
+    new_id,
     require_permissions,
 )
 from app.db.base import get_db
 from app.db.models import User
 from app.core.permissions import Permission
 from app.schemas.common import PageQuery
-from app.schemas.user import LoginRequest, LoginResponse, UserCreate, UserOut, UserUpdate
+from app.schemas.user import (
+    LoginRequest,
+    LoginResponse,
+    PasswordChangeRequest,
+    RegisterRequest,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 
 router = APIRouter(tags=["用户与鉴权"])
-
-DEMO_PASSWORD = "123456"
 
 
 def user_out(user: User, viewer: CurrentUser | None = None) -> dict:
@@ -48,10 +57,10 @@ def user_out(user: User, viewer: CurrentUser | None = None) -> dict:
     return data
 
 
-@router.post("/auth/login", summary="登录（本轮演示密码 123456）")
+@router.post("/auth/login", summary="登录（注册用户用自己密码，演示账号统一 123456）")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.student_no == payload.student_no, User.is_deleted.is_(False)))
-    if user is None or payload.password != DEMO_PASSWORD:
+    if user is None or not check_login_password(payload.password, user.password_hash):
         raise BizError(CODE_UNAUTHORIZED, "学号或密码错误")
     if user.status != UserStatus.ACTIVE.value:
         raise BizError(CODE_UNAUTHORIZED, "账号已被禁用，请联系管理员")
@@ -70,12 +79,97 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/auth/register", status_code=201, summary="注册（学生或普通管理员），注册成功即登录")
+def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+    # 访客免注册；系统管理员只能由运维在库里设置，接口不开放
+    if payload.role not in (UserRole.STUDENT.value, UserRole.ADMIN.value):
+        raise BizError(CODE_PARAM_ERROR, "只能注册为学生或普通管理员")
+
+    exists = db.scalar(select(User).where(User.student_no == payload.student_no))
+    if exists:
+        raise BizError(CODE_PARAM_ERROR, "该学号/工号已注册，请直接登录")
+
+    row = User(
+        user_id=new_id("user"),
+        student_no=payload.student_no,
+        name=payload.name,
+        role=payload.role,
+        college=payload.college,
+        major=payload.major,
+        grade=payload.grade,
+        class_no=payload.class_no,
+        phone=payload.phone,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        granted_permissions=[],
+        revoked_permissions=[],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    token = create_token(row.user_id, row.role)
+    return ok(
+        LoginResponse(
+            token=token,
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=UserOut.model_validate(user_out(row, CurrentUser(row.user_id, row.role))),
+        ).model_dump()
+    )
+
+
+@router.post("/auth/guest", summary="访客进入（无需账号，返回只读身份）")
+def guest_login(db: Session = Depends(get_db)):
+    """一次性访客入口：复用 guest 账号，便于前端「一键以访客身份浏览」。"""
+    row = db.scalar(select(User).where(User.student_no == "guest", User.is_deleted.is_(False)))
+    if row is None:
+        row = User(
+            user_id=new_id("user"),
+            student_no="guest",
+            name="访客",
+            role=UserRole.VISITOR.value,
+            password_hash="",
+            granted_permissions=[],
+            revoked_permissions=[],
+        )
+        db.add(row)
+    row.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    token = create_token(row.user_id, row.role)
+    return ok(
+        LoginResponse(
+            token=token,
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=UserOut.model_validate(user_out(row, CurrentUser(row.user_id, row.role))),
+        ).model_dump()
+    )
+
+
 @router.get("/users/me", summary="当前登录用户信息（含有效权限）")
 def me(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.get(User, user.user_id)
     if row is None:
         raise BizError(CODE_NOT_FOUND, "用户不存在")
     return ok(user_out(row, user))
+
+
+@router.patch("/users/me/password", summary="修改本人密码")
+def change_password(
+    payload: PasswordChangeRequest,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(User, current.user_id)
+    if row is None:
+        raise BizError(CODE_NOT_FOUND, "用户不存在")
+    if not check_login_password(payload.old_password, row.password_hash):
+        raise BizError(CODE_PARAM_ERROR, "原密码不正确")
+    if payload.old_password == payload.new_password:
+        raise BizError(CODE_PARAM_ERROR, "新密码不能与原密码相同")
+    row.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return ok({"updated": True})
 
 
 @router.get(

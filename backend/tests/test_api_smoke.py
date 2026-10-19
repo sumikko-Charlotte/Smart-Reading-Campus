@@ -19,6 +19,8 @@ from app.db.models import (  # noqa: E402
     Certificate,
     Notification,
     PermissionLog,
+    PermissionRequest,
+    User,
 )
 from app.main import app  # noqa: E402
 
@@ -65,6 +67,16 @@ def cleanup() -> None:
             db.execute(delete(ActivitySignup).where(ActivitySignup.activity_id.in_(ids)))
             db.execute(delete(Certificate).where(Certificate.activity_id.in_(ids)))
         db.execute(delete(PermissionLog).where(PermissionLog.remark.like(f"{PREFIX}%")))
+
+        # 注册测试账号（SMOKE 前缀）连同申请单、日志一起清理，保证下次可重复注册
+        test_users = db.scalars(select(User).where(User.student_no.like("SMOKE%"))).all()
+        if test_users:
+            uids = [row.user_id for row in test_users]
+            db.execute(delete(PermissionRequest).where(PermissionRequest.user_id.in_(uids)))
+            db.execute(delete(PermissionLog).where(PermissionLog.target_user_id.in_(uids)))
+            db.execute(delete(PermissionLog).where(PermissionLog.operator_id.in_(uids)))
+            for row in test_users:
+                db.delete(row)
         db.commit()
     finally:
         db.close()
@@ -78,7 +90,7 @@ def main() -> None:
         "admin": login("T2009"),
         "admin_no_review": login("T2010"),
         "alice": login("2025211987"),
-        "wanbei": login("2025211995"),
+        "student_creator": login("2025211994"),
         "bob": login("2025211996"),
         "guest": login("guest"),
     }
@@ -88,7 +100,7 @@ def main() -> None:
     tokens = {key: data["token"] for key, data in accounts.items()}
     assert "system:permission" in accounts["super"]["user"]["permissions"]
     assert "activity:review" not in accounts["admin_no_review"]["user"]["permissions"], "T2010 的审批权应被收回"
-    assert "activity:create" in accounts["wanbei"]["user"]["permissions"], "万贝应有申办权"
+    assert "activity:create" in accounts["student_creator"]["user"]["permissions"], "林晓应有申办权"
     assert "activity:create" not in accounts["bob"]["user"]["permissions"], "Bob 不应有申办权"
     assert "activity:signup" not in accounts["guest"]["user"]["permissions"], "访客不应能报名"
     print("  ✅ 角色默认权限与按人收回/授予均生效")
@@ -121,12 +133,12 @@ def main() -> None:
             "signup_end_at": "2026-12-01T00:00:00+08:00",
             "need_certificate": True,
         },
-        headers=auth(tokens["wanbei"]),
+        headers=auth(tokens["student_creator"]),
     )
     act = expect(created, 0, "学生会成员申办活动")["data"]
     assert act["status"] == "draft" and act["level"] == "none"
 
-    expect(client.post(f"/api/v1/activities/{act['activity_id']}/submit", json={}, headers=auth(tokens["wanbei"])), 0, "提交审批")
+    expect(client.post(f"/api/v1/activities/{act['activity_id']}/submit", json={}, headers=auth(tokens["student_creator"])), 0, "提交审批")
 
     # 无审批权的管理员不能审批
     expect(
@@ -276,6 +288,93 @@ def main() -> None:
     expect(client.post(f"/api/v1/activities/{act['activity_id']}/status", json={"target_status": "signup_closed"},
                        headers=auth(tokens["admin"])), 0, "合法流转")
     print("  ✅ 状态机拦截非法流转")
+
+    print("=== 8. 注册与访客入口 ===")
+    student = expect(
+        client.post("/api/v1/auth/register", json={
+            "student_no": "SMOKE9001", "name": "注册学生", "password": "stu12345",
+            "role": "student", "college": "计算机学院",
+        }),
+        0,
+        "注册学生",
+    )
+    stu_token = student["data"]["token"]
+    assert student["data"]["user"]["role"] == "student"
+    me = expect(client.get("/api/v1/users/me", headers=auth(stu_token)), 0, "注册后即登录")
+    assert me["data"]["student_no"] == "SMOKE9001"
+    # 注册用户只认自己的密码，不接受统一演示密码
+    expect(client.post("/api/v1/auth/login", json={"student_no": "SMOKE9001", "password": PASSWORD}), 1002, "演示密码不可登录注册账号")
+    expect(client.post("/api/v1/auth/login", json={"student_no": "SMOKE9001", "password": "stu12345"}), 0, "新密码登录")
+    expect(client.post("/api/v1/auth/register", json={
+        "student_no": "SMOKE9001", "name": "重复", "password": "stu12345",
+    }), 1001, "重复学号注册")
+    admin_reg = expect(
+        client.post("/api/v1/auth/register", json={
+            "student_no": "SMOKE9002", "name": "注册管理员", "password": "adm12345", "role": "admin",
+        }),
+        0,
+        "注册管理员",
+    )
+    assert admin_reg["data"]["user"]["role"] == "admin"
+    assert "activity:review" in admin_reg["data"]["user"]["permissions"]
+    expect(client.post("/api/v1/auth/register", json={
+        "student_no": "SMOKE9003", "name": "越级", "password": "xxx12345", "role": "super_admin",
+    }), 1001, "不允许注册系统管理员")
+    guest = expect(client.post("/api/v1/auth/guest"), 0, "访客入口")
+    assert guest["data"]["user"]["role"] == "visitor"
+    assert "activity:signup" not in guest["data"]["user"]["permissions"]
+    print("  ✅ 学生/管理员注册即登录、密码独立、访客一键进入")
+
+    print("=== 9. 权限申请与审批 ===")
+    req = expect(
+        client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                    json={"permissions": ["activity:create"], "reason": f"{PREFIX}我要申办读书会"}),
+        0,
+        "提交申请",
+    )
+    request_id = req["data"]["request_id"]
+    assert req["data"]["status"] == "pending"
+    mine = expect(client.get("/api/v1/permission-requests/mine", headers=auth(stu_token)), 0, "我的申请")
+    assert mine["data"]["total"] >= 1
+    expect(client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                       json={"permissions": ["activity:create"], "reason": f"{PREFIX}重复申请"}), 1005, "重复申请")
+    expect(client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                       json={"permissions": ["system:permission"], "reason": f"{PREFIX}越权申请"}), 1003, "申请系统权限")
+    # 普通学生看不到全量申请
+    expect(client.get("/api/v1/permission-requests", headers=auth(stu_token)), 1003, "学生看全量申请")
+    # 普通管理员同样看不到
+    expect(client.get("/api/v1/permission-requests", headers=auth(tokens["admin"])), 1003, "管理员看全量申请")
+    all_req = expect(client.get("/api/v1/permission-requests", params={"status": "pending"},
+                                headers=auth(tokens["super"])), 0, "系统管理员看申请")
+    assert any(item["request_id"] == request_id for item in all_req["data"]["list"])
+    summary = expect(client.get("/api/v1/permission-requests/summary", headers=auth(tokens["super"])), 0, "申请统计")
+    assert summary["data"]["pending"] >= 1
+    reviewed = expect(
+        client.post(f"/api/v1/permission-requests/{request_id}/review", headers=auth(tokens["super"]),
+                    json={"approve": True, "comment": f"{PREFIX}同意"}),
+        0,
+        "审批通过",
+    )
+    assert "activity:create" in reviewed["data"]["granted"]
+    me_after = expect(client.get("/api/v1/users/me", headers=auth(stu_token)), 0, "审批后权限")
+    assert "activity:create" in me_after["data"]["permissions"], "审批通过应即时生效"
+    expect(client.post(f"/api/v1/permission-requests/{request_id}/review", headers=auth(tokens["super"]),
+                       json={"approve": True}), 1005, "重复审批")
+    # 驳回路径
+    req2 = expect(client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                              json={"permissions": ["book:manage"], "reason": f"{PREFIX}想管馆藏"}), 0, "再提交")
+    rejected = expect(client.post(f"/api/v1/permission-requests/{req2['data']['request_id']}/review",
+                                  headers=auth(tokens["super"]), json={"approve": False, "comment": f"{PREFIX}暂不开放"}),
+                      0, "驳回")
+    assert rejected["data"]["request"]["status"] == "rejected"
+    assert "book:manage" not in expect(client.get("/api/v1/users/me", headers=auth(stu_token)), 0, "驳回后权限")["data"]["permissions"]
+    # 撤回
+    req3 = expect(client.post("/api/v1/permission-requests", headers=auth(stu_token),
+                              json={"permissions": ["drift:manage"], "reason": f"{PREFIX}想管漂流"}), 0, "三提")
+    cancelled = expect(client.post(f"/api/v1/permission-requests/{req3['data']['request_id']}/cancel",
+                                   headers=auth(stu_token)), 0, "撤回")
+    assert cancelled["data"]["status"] == "cancelled"
+    print("  ✅ 申请→仅系统管理员可见→审批即时授予→驳回不授权→可撤回")
 
     print("\n冒烟测试全部通过 ✅")
 

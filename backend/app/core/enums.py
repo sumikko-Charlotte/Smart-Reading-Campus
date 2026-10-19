@@ -21,6 +21,15 @@ class UserStatus(StrEnum):
     DISABLED = "disabled"
 
 
+class PermissionRequestStatus(StrEnum):
+    """权限申请单状态：学生/管理员提交 → 系统管理员审批。"""
+
+    PENDING = "pending"      # 待审批
+    APPROVED = "approved"    # 已通过（权限已写入）
+    REJECTED = "rejected"    # 已驳回
+    CANCELLED = "cancelled"  # 申请人主动撤回
+
+
 class ActivityCategory(StrEnum):
     READING_SHARE = "reading_share"
     LECTURE = "lecture"

@@ -11,10 +11,22 @@ const routes = [
     meta: { title: '登录', public: true }
   },
   {
+    path: '/register',
+    name: 'register',
+    component: () => import('@/views/Register.vue'),
+    meta: { title: '注册', public: true }
+  },
+  {
     path: '/',
     component: () => import('@/layouts/BasicLayout.vue'),
     redirect: '/dashboard',
     children: [
+      {
+        path: 'profile',
+        name: 'profile',
+        component: () => import('@/views/Profile.vue'),
+        meta: { title: '个人中心', hidden: true }
+      },
       {
         path: 'dashboard',
         name: 'dashboard',

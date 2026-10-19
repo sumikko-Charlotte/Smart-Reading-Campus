@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 import uuid
 
@@ -39,6 +40,7 @@ ID_PREFIXES = {
     "favorite": "fav",
     "event": "evt",
     "agent_run": "run",
+    "permission_request": "prq",
 }
 
 
@@ -46,6 +48,43 @@ def new_id(kind: str) -> str:
     """统一主键：前缀 + 12 位十六进制，如 usr_9f2a1c77b0d4。"""
     prefix = ID_PREFIXES.get(kind, kind[:3])
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+# ---------------------------------------------------------------- 密码
+#
+# 只依赖标准库：PBKDF2-HMAC-SHA256 + 每用户随机盐，格式
+#   pbkdf2_sha256$迭代次数$盐(hex)$摘要(hex)
+# 演示账号（seed 写入）没有 password_hash，登录时回退到统一演示密码，
+# 一旦通过「修改密码」设置过密码，就只认哈希，不再接受演示密码。
+
+PBKDF2_ITERATIONS = 120_000
+DEMO_PASSWORD = "123456"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
+    try:
+        algo, iterations, salt, expected = stored.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(digest.hex(), expected)
+
+
+def check_login_password(password: str, stored_hash: str) -> bool:
+    """有哈希按哈希校验；没有哈希的演示账号仍可用统一演示密码登录。"""
+    if stored_hash:
+        return verify_password(password, stored_hash)
+    return password == DEMO_PASSWORD
 
 
 # ---------------------------------------------------------------- token

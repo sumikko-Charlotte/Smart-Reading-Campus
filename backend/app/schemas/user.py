@@ -54,7 +54,27 @@ class UserOut(ORMModel, UserBase):
 
 class LoginRequest(RequestModel):
     student_no: str = Field(description="学号/工号")
-    password: str = Field(default="", description="本轮为占位校验，演示密码 123456")
+    password: str = Field(default="", description="注册用户为自己的密码；演示账号为 123456")
+
+
+class RegisterRequest(RequestModel):
+    """注册：只开放「学生 / 普通管理员」两种身份，访客免注册、系统管理员不可注册。"""
+
+    student_no: str = Field(min_length=3, max_length=32, description="学号/工号，注册后作为登录账号")
+    name: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=64)
+    role: Literal["student", "admin"] = Field(default="student", description="student=学生，admin=普通管理员")
+    college: str = Field(default="", max_length=64)
+    major: str = Field(default="", max_length=64)
+    grade: str = Field(default="", max_length=16)
+    class_no: str = Field(default="", max_length=32)
+    phone: str = Field(default="", max_length=32)
+    email: str = Field(default="", max_length=128)
+
+
+class PasswordChangeRequest(RequestModel):
+    old_password: str = Field(default="", max_length=64)
+    new_password: str = Field(min_length=6, max_length=64)
 
 
 class LoginResponse(RequestModel):
@@ -122,3 +142,34 @@ class PermissionLogOut(ORMModel):
     after_value: str
     remark: str
     created_at: datetime
+
+
+# ------------------------------------------------------------ 权限申请
+
+
+class PermissionRequestCreate(RequestModel):
+    permissions: list[str] = Field(min_length=1, description="本次申请的一到多个权限码")
+    reason: str = Field(min_length=5, max_length=500, description="申请理由，管理员审批依据")
+
+
+class PermissionReviewRequest(RequestModel):
+    approve: bool
+    comment: str = Field(default="", max_length=255, description="审批意见，驳回时建议填写")
+
+
+class PermissionRequestOut(ORMModel):
+    request_id: str
+    user_id: str
+    user_name: str
+    student_no: str
+    user_role: str
+    role_label: str = ""
+    permissions: list[str] = Field(default_factory=list)
+    reason: str
+    status: str
+    status_label: str = ""
+    reviewer_name: str = ""
+    review_comment: str = ""
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

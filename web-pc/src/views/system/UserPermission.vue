@@ -101,6 +101,97 @@
         </div>
       </el-tab-pane>
 
+      <el-tab-pane name="requests">
+        <template #label>
+          权限申请
+          <el-badge v-if="requestSummary.pending" :value="requestSummary.pending" class="tab-badge" />
+        </template>
+
+        <div class="filter-bar">
+          <el-form :inline="true" @submit.prevent>
+            <el-form-item label="状态">
+              <el-select v-model="requestQuery.status" placeholder="全部" clearable style="width: 130px">
+                <el-option v-for="s in REQUEST_STATUS" :key="s.value" :label="s.label" :value="s.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="身份">
+              <el-select v-model="requestQuery.role" placeholder="全部" clearable style="width: 130px">
+                <el-option label="学生" value="student" />
+                <el-option label="普通管理员" value="admin" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="关键词">
+              <el-input v-model="requestQuery.keyword" placeholder="姓名 / 学号 / 理由" clearable style="width: 190px" @keyup.enter="fetchRequests" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :icon="Search" @click="fetchRequests">查询</el-button>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <div class="card-block">
+          <el-table v-loading="requestsLoading" :data="requests" stripe border>
+            <el-table-column label="申请人" min-width="160">
+              <template #default="{ row }">
+                <div class="cell-title">{{ row.user_name }}</div>
+                <div class="text-muted cell-sub">{{ row.student_no }} · {{ row.role_label }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="申请权限" min-width="220">
+              <template #default="{ row }">
+                <el-tag v-for="code in row.permissions" :key="code" size="small" effect="plain" class="req-perm">
+                  {{ permName(code) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="reason" label="申请理由" min-width="220" show-overflow-tooltip />
+            <el-table-column label="提交时间" width="160">
+              <template #default="{ row }">{{ formatDateTime(row.created_at, true) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="95" align="center">
+              <template #default="{ row }">
+                <el-tag :type="requestStatusType(row.status)" effect="plain" size="small">{{ row.status_label }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="审批" min-width="160">
+              <template #default="{ row }">
+                <div v-if="row.reviewer_name" class="review-cell">
+                  <span>{{ row.reviewer_name }}：{{ row.review_comment || '（未填写）' }}</span>
+                  <span class="text-muted">{{ formatDateTime(row.reviewed_at, true) }}</span>
+                </div>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="90" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'pending'"
+                  text
+                  type="primary"
+                  size="small"
+                  @click="openReview(row)"
+                >审批</el-button>
+                <span v-else class="text-muted">已处理</span>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="暂无权限申请" />
+            </template>
+          </el-table>
+
+          <div class="pager">
+            <el-pagination
+              v-model:current-page="requestQuery.page"
+              v-model:page-size="requestQuery.page_size"
+              :total="requestTotal"
+              layout="total, prev, pager, next"
+              background
+              @current-change="fetchRequests"
+            />
+          </div>
+        </div>
+      </el-tab-pane>
+
       <el-tab-pane label="变更日志" name="logs">
         <div class="card-block">
           <el-table v-loading="logsLoading" :data="logs" stripe border>
@@ -178,18 +269,76 @@
         <el-button type="primary" :loading="drawer.saving" @click="onSavePermissions">保存并生效</el-button>
       </template>
     </el-drawer>
+
+    <!-- 权限申请审批 -->
+    <el-dialog v-model="reviewDialog.visible" title="审批权限申请" width="560px">
+      <div class="review-head">
+        <div>
+          <strong>{{ reviewDialog.row?.user_name }}</strong>
+          <span class="text-muted"> · {{ reviewDialog.row?.student_no }} · {{ reviewDialog.row?.role_label }}</span>
+        </div>
+        <el-tag effect="plain" size="small">{{ formatDateTime(reviewDialog.row?.created_at, true) }}</el-tag>
+      </div>
+
+      <div class="review-block">
+        <div class="review-label">申请的权限</div>
+        <div>
+          <el-tag v-for="code in reviewDialog.row?.permissions || []" :key="code" size="small" effect="plain" class="req-perm">
+            {{ permName(code) }}
+          </el-tag>
+        </div>
+      </div>
+
+      <div class="review-block">
+        <div class="review-label">申请理由</div>
+        <div class="review-reason">{{ reviewDialog.row?.reason }}</div>
+      </div>
+
+      <el-radio-group v-model="reviewDialog.approve" class="review-block">
+        <el-radio :value="true">通过并立即授予</el-radio>
+        <el-radio :value="false">驳回</el-radio>
+      </el-radio-group>
+
+      <el-input
+        v-model="reviewDialog.comment"
+        type="textarea"
+        :rows="2"
+        maxlength="255"
+        show-word-limit
+        :placeholder="reviewDialog.approve ? '审批意见（可选）' : '驳回原因（建议填写，申请人可见）'"
+      />
+
+      <el-alert
+        v-if="reviewDialog.approve"
+        class="mt-12"
+        type="success"
+        :closable="false"
+        show-icon
+        title="通过后权限立即写入该账号，并记入变更日志，申请人无需重新登录。"
+      />
+
+      <template #footer>
+        <el-button @click="reviewDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="reviewDialog.saving" @click="submitReview">
+          {{ reviewDialog.approve ? '通过并授予' : '确认驳回' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import {
   getPermissionCatalog,
   getUserPermissions,
   listPermissionLogs,
+  listPermissionRequests,
   listUsers,
+  permissionRequestSummary,
+  reviewPermissionRequest,
   updateUserPermissions,
   updateUserRole
 } from '@/api/user'
@@ -210,6 +359,20 @@ const permMap = ref({})
 const query = reactive({ page: 1, page_size: 10, keyword: '', role: '' })
 
 const drawer = reactive({ visible: false, user: null, summary: null, remark: '', saving: false })
+
+// ---- 权限申请 ----
+const REQUEST_STATUS = [
+  { value: 'pending', label: '待审批' },
+  { value: 'approved', label: '已通过' },
+  { value: 'rejected', label: '已驳回' },
+  { value: 'cancelled', label: '已撤回' }
+]
+const requests = ref([])
+const requestTotal = ref(0)
+const requestsLoading = ref(false)
+const requestSummary = ref({ pending: 0, counts: {} })
+const requestQuery = reactive({ page: 1, page_size: 10, status: 'pending', role: '', keyword: '' })
+const reviewDialog = reactive({ visible: false, row: null, approve: true, comment: '', saving: false })
 
 /** 当前抽屉里勾选的权限（有效权限镜像） */
 const checked = reactive(new Set())
@@ -247,6 +410,58 @@ async function fetchLogs() {
     logs.value = data.list
   } finally {
     logsLoading.value = false
+  }
+}
+
+async function fetchRequests() {
+  requestsLoading.value = true
+  try {
+    const data = await listPermissionRequests({
+      page: requestQuery.page,
+      page_size: requestQuery.page_size,
+      status: requestQuery.status || undefined,
+      role: requestQuery.role || undefined,
+      keyword: requestQuery.keyword || undefined
+    })
+    requests.value = data.list
+    requestTotal.value = data.total
+  } finally {
+    requestsLoading.value = false
+  }
+}
+
+async function fetchRequestSummary() {
+  requestSummary.value = await permissionRequestSummary()
+}
+
+function requestStatusType(status) {
+  return { pending: 'warning', approved: 'success', rejected: 'danger', cancelled: 'info' }[status] || 'info'
+}
+
+function openReview(row) {
+  Object.assign(reviewDialog, { visible: true, row, approve: true, comment: '' })
+}
+
+async function submitReview() {
+  if (!reviewDialog.approve && !reviewDialog.comment.trim()) {
+    ElMessage.warning('驳回时请填写原因，便于申请人了解')
+    return
+  }
+  reviewDialog.saving = true
+  try {
+    const data = await reviewPermissionRequest(reviewDialog.row.request_id, {
+      approve: reviewDialog.approve,
+      comment: reviewDialog.comment.trim()
+    })
+    if (reviewDialog.approve) {
+      ElMessage.success(`已通过，授予 ${data.granted.length} 项权限并即时生效`)
+    } else {
+      ElMessage.info('已驳回')
+    }
+    reviewDialog.visible = false
+    await Promise.all([fetchRequests(), fetchRequestSummary(), fetchUsers(), fetchLogs()])
+  } finally {
+    reviewDialog.saving = false
   }
 }
 
@@ -305,7 +520,12 @@ async function onRoleChange(row, role) {
 }
 
 async function refresh() {
-  await Promise.all([fetchUsers(), activeTab.value === 'logs' ? fetchLogs() : Promise.resolve()])
+  await Promise.all([
+    fetchUsers(),
+    fetchRequestSummary(),
+    activeTab.value === 'logs' ? fetchLogs() : Promise.resolve(),
+    activeTab.value === 'requests' ? fetchRequests() : Promise.resolve()
+  ])
 }
 
 onMounted(async () => {
@@ -313,6 +533,11 @@ onMounted(async () => {
   catalog.value = data.groups
   permMap.value = Object.fromEntries(data.groups.flatMap((g) => g.items.map((i) => [i.code, i.name])))
   await refresh()
+})
+
+watch(activeTab, (tab) => {
+  if (tab === 'requests') fetchRequests()
+  if (tab === 'logs') fetchLogs()
 })
 </script>
 
@@ -379,5 +604,50 @@ onMounted(async () => {
 
 .remark-form {
   margin-top: 16px;
+}
+
+.tab-badge {
+  margin-left: 4px;
+  transform: translateY(-2px);
+}
+
+.req-perm {
+  margin: 0 4px 4px 0;
+}
+
+.review-cell {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.review-block {
+  margin-bottom: 12px;
+}
+
+.review-label {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.review-reason {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mt-12 {
+  margin-top: 12px;
 }
 </style>

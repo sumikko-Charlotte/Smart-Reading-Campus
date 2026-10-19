@@ -9,7 +9,7 @@
     T2009        普通管理员（图书馆老师，有审批权）
     T2010        普通管理员（审批权已被系统管理员收回）
     2025211987   Alice   学生
-    2025211995   万贝    学生 + 额外授予「申办活动」（学生会成员）
+    2025211994   林晓    学生 + 额外授予「申办活动」（学生会成员）
     2025211996   Bob     学生（无申办权）
     guest        访客（只读 + AI 推荐降级 Mock）
 """
@@ -31,6 +31,7 @@ from app.core.enums import (  # noqa: E402
     CertificateStatus,
     DriftStatus,
     NotificationType,
+    PermissionRequestStatus,
     SignupStatus,
     SummaryStatus,
     UserRole,
@@ -48,6 +49,7 @@ from app.db.models import (  # noqa: E402
     Certificate,
     DriftRecord,
     Notification,
+    PermissionRequest,
     ReadingEvent,
     User,
 )
@@ -66,7 +68,7 @@ USERS = [
     dict(student_no="T2010", name="图书馆老师（无审批权）", role=UserRole.ADMIN.value, college="图书馆",
          revoked_permissions=[Permission.ACTIVITY_REVIEW.value]),
     dict(student_no="2025211987", name="Alice", role=UserRole.STUDENT.value, college="信息与通信工程学院"),
-    dict(student_no="2025211995", name="万贝", role=UserRole.STUDENT.value, college="计算机学院",
+    dict(student_no="2025211994", name="林晓", role=UserRole.STUDENT.value, college="计算机学院",
          granted_permissions=[Permission.ACTIVITY_CREATE.value]),
     dict(student_no="2025211996", name="Bob", role=UserRole.STUDENT.value, college="经济管理学院"),
     dict(student_no="guest", name="访客", role=UserRole.VISITOR.value),
@@ -121,10 +123,10 @@ ACTIVITIES = [
          signup_count=0, need_certificate=False, organizer="T2009", start_offset=12, signup_end_offset=8),
     dict(title="「书页间的光」校园摄影展", subtitle="用镜头记录阅读现场", category=ActivityCategory.EXHIBITION.value,
          location="图书馆二层展廊", capacity=80, status=ActivityStatus.PENDING_REVIEW.value, level=ActivityLevel.NONE.value,
-         signup_count=0, need_certificate=True, organizer="2025211995", start_offset=18, signup_end_offset=14),
+         signup_count=0, need_certificate=True, organizer="2025211994", start_offset=18, signup_end_offset=14),
     dict(title="旧书交换市集（第二期）", subtitle="换一本没读过的书", category=ActivityCategory.BOOK_DRIFT.value,
          location="图书馆一层大厅", capacity=100, status=ActivityStatus.REJECTED.value, level=ActivityLevel.NONE.value,
-         signup_count=0, need_certificate=False, organizer="2025211995", start_offset=25, signup_end_offset=21),
+         signup_count=0, need_certificate=False, organizer="2025211994", start_offset=25, signup_end_offset=21),
     dict(title="「共读一本书」院级分享会", subtitle="院系联合阅读活动", category=ActivityCategory.READING_SHARE.value,
          location="沙河校区学生活动中心", capacity=50, status=ActivityStatus.FINISHED.value, level=ActivityLevel.COLLEGE.value,
          signup_count=2, checkin_count=2, need_certificate=True, organizer="T2009", start_offset=-45, signup_end_offset=-50),
@@ -217,11 +219,13 @@ def _seed_ai_data(db, users: dict[str, User]) -> None:
 
     只给两个学生账号造少量样本，用于验证表结构与后续推荐链路；
     真实数据进来后这些演示记录可整体清掉。
+    按用户判断是否已有数据，避免「Alice 有记录就整体跳过、林晓永远补不上」。
     """
-    if db.scalar(select(BorrowRecord).limit(1)) is not None:
-        return
-
     books = {b.isbn: b for b in db.scalars(select(Book)).all()}
+    users_with_borrow = {row.user_id for row in db.scalars(select(BorrowRecord)).all()}
+    users_with_favorite = {row.user_id for row in db.scalars(select(BookFavorite)).all()}
+    users_with_event = {row.user_id for row in db.scalars(select(ReadingEvent)).all()}
+
     plans = {
         "2025211987": [  # Alice：偏技术 + 历史
             ("9787115546081", -120, 30, 28, 1),
@@ -229,7 +233,7 @@ def _seed_ai_data(db, users: dict[str, User]) -> None:
             ("9787508647357", -45, 30, 21, 0),
             ("9787111636663", -12, 30, None, 0),  # 在借
         ],
-        "2025211995": [  # 万贝：偏文学
+        "2025211994": [  # 林晓：偏文学
             ("9787020002207", -150, 30, 27, 2),
             ("9787544253994", -90, 30, 25, 0),
             ("9787508647357", -30, 30, None, 1),  # 在借
@@ -237,7 +241,7 @@ def _seed_ai_data(db, users: dict[str, User]) -> None:
     }
     for student_no, items in plans.items():
         user = users.get(student_no)
-        if user is None:
+        if user is None or user.user_id in users_with_borrow:
             continue
         for isbn, borrow_offset, due_offset, return_offset, renew in items:
             book = books.get(isbn)
@@ -261,11 +265,11 @@ def _seed_ai_data(db, users: dict[str, User]) -> None:
     favorites = [
         ("2025211987", "9787111636663", "想系统学一下响应式原理", 5),
         ("2025211987", "9787508647357", "", 4),
-        ("2025211995", "9787020002207", "重读第三遍", 5),
+        ("2025211994", "9787020002207", "重读第三遍", 5),
     ]
     for student_no, isbn, note, rating in favorites:
         user, book = users.get(student_no), books.get(isbn)
-        if user is None or book is None:
+        if user is None or book is None or user.user_id in users_with_favorite:
             continue
         db.add(
             BookFavorite(
@@ -283,14 +287,14 @@ def _seed_ai_data(db, users: dict[str, User]) -> None:
         ("2025211987", "ai_recommend", "", "", "想找几本机器学习入门书", -8),
         ("2025211987", "favorite", "9787111636663", "", "", -6),
         ("2025211987", "view_activity", "", "act", "", -5),
-        ("2025211995", "search", "", "", "好看的短篇小说", -7),
-        ("2025211995", "view_book", "9787544253994", "", "", -6),
-        ("2025211995", "ai_chat", "9787020002207", "", "红楼梦前五回人物关系", -4),
-        ("2025211995", "summary_view", "", "summary", "", -3),
+        ("2025211994", "search", "", "", "好看的短篇小说", -7),
+        ("2025211994", "view_book", "9787544253994", "", "", -6),
+        ("2025211994", "ai_chat", "9787020002207", "", "红楼梦前五回人物关系", -4),
+        ("2025211994", "summary_view", "", "summary", "", -3),
     ]
     for student_no, event_type, isbn, ref_type, keyword, day in events:
         user = users.get(student_no)
-        if user is None:
+        if user is None or user.user_id in users_with_event:
             continue
         book = books.get(isbn) if isbn else None
         db.add(
@@ -334,8 +338,8 @@ def main() -> None:
         finished = activities["21 天阅读打卡挑战（第一期）"]
         finished_college = activities["「共读一本书」院级分享会"]
         alice = users["2025211987"]
-        wanbei = users["2025211995"]
-        for activity, extra_user in ((finished, alice), (finished, wanbei), (finished_college, alice), (finished_college, wanbei)):
+        xiaolin = users["2025211994"]
+        for activity, extra_user in ((finished, alice), (finished, xiaolin), (finished_college, alice), (finished_college, xiaolin)):
             exists = db.scalar(
                 select(ActivitySignup).where(
                     ActivitySignup.activity_id == activity.activity_id,
@@ -356,7 +360,7 @@ def main() -> None:
         db.flush()
 
         year = datetime.now(CST).year
-        for activity, student in ((finished, alice), (finished, wanbei), (finished_college, alice)):
+        for activity, student in ((finished, alice), (finished, xiaolin), (finished_college, alice)):
             exists = db.scalar(
                 select(Certificate).where(
                     Certificate.activity_id == activity.activity_id,
@@ -441,12 +445,39 @@ def main() -> None:
                 )
             )
 
+        # 权限申请演示：两条待审批，系统管理员登录即可在「用户与权限 → 权限申请」看到
+        if db.scalar(select(PermissionRequest).limit(1)) is None:
+            db.add(
+                PermissionRequest(
+                    request_id=new_id("permission_request"),
+                    user_id=users["2025211994"].user_id,
+                    user_name=users["2025211994"].name,
+                    student_no=users["2025211994"].student_no,
+                    user_role=UserRole.STUDENT.value,
+                    permissions=[Permission.ACTIVITY_SUMMARY.value],
+                    reason="学生会本学期要办两场读书分享会，结束后需要发布图文总结并推送给同学。",
+                    status=PermissionRequestStatus.PENDING.value,
+                )
+            )
+            db.add(
+                PermissionRequest(
+                    request_id=new_id("permission_request"),
+                    user_id=users["2025211996"].user_id,
+                    user_name=users["2025211996"].name,
+                    student_no=users["2025211996"].student_no,
+                    user_role=UserRole.STUDENT.value,
+                    permissions=[Permission.ACTIVITY_CREATE.value, Permission.ACTIVITY_SUMMARY.value],
+                    reason="想和室友一起办一次旧书交换活动，需要申办活动并发布活动总结。",
+                    status=PermissionRequestStatus.PENDING.value,
+                )
+            )
+
         _seed_ai_data(db, users)
 
         db.commit()
         print("[seed] 完成 ✅")
         print("[seed] 演示账号 / 密码 123456：admin(系统管理员) T2009(管理员,可审批) T2010(管理员,无审批权) "
-              "2025211987(学生) 2025211995(学生,可申办活动) guest(访客)")
+              "2025211987(学生) 2025211994(学生,可申办活动) guest(访客)")
     finally:
         db.close()
 

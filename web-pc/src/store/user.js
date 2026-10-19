@@ -36,6 +36,22 @@ export const useUserStore = defineStore('user', {
       setToken(data.token)
       return data
     },
+    /** 注册：role 只允许 student / admin，后端校验，注册成功直接进入登录态 */
+    async register(payload) {
+      const data = await userApi.register(payload)
+      this.token = data.token
+      this.profile = data.user
+      setToken(data.token)
+      return data
+    },
+    /** 访客：不注册、不登录，直接拿只读身份 */
+    async guestLogin() {
+      const data = await userApi.guestLogin()
+      this.token = data.token
+      this.profile = data.user
+      setToken(data.token)
+      return data
+    },
     async fetchProfile() {
       if (!this.token) return null
       this.profile = await userApi.getProfile()

@@ -53,6 +53,7 @@
             </span>
             <template #dropdown>
               <el-dropdown-menu>
+                <el-dropdown-item command="profile">个人中心</el-dropdown-item>
                 <el-dropdown-item command="permissions">我的权限（{{ permissionCount }} 项）</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
@@ -83,7 +84,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 import { Bell } from '@element-plus/icons-vue'
 import { useUserStore } from '@/store/user'
 import { health } from '@/api/user'
@@ -107,10 +108,11 @@ const menus = [
   { path: '/agents', title: '智能体工作台', icon: 'Cpu', permission: PERM.AI_RECOMMEND },
   { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound', permission: PERM.AI_CHAT },
   { path: '/drift', title: '图书漂流', icon: 'Van', permission: PERM.DRIFT_VIEW },
-  { path: '/system/users', title: '用户与权限', icon: 'User', permission: PERM.SYSTEM_PERMISSION }
+  { path: '/system/users', title: '用户与权限', icon: 'User', permission: PERM.SYSTEM_PERMISSION },
+  { path: '/profile', title: '个人中心', icon: 'Avatar' }
 ]
 
-const visibleMenus = computed(() => menus.filter((m) => store.can(m.permission)))
+const visibleMenus = computed(() => menus.filter((m) => !m.permission || store.can(m.permission)))
 const activeMenu = computed(() => route.meta.activeMenu || route.path)
 const roleType = computed(() => typeOf(USER_ROLE, store.role))
 const permissionCount = computed(() => store.permissions.length)
@@ -131,12 +133,12 @@ onMounted(async () => {
 })
 
 async function onCommand(command) {
+  if (command === 'profile') {
+    router.push('/profile')
+    return
+  }
   if (command === 'permissions') {
-    ElMessageBox.alert(
-      (store.permissions || []).map((code) => `· ${code}`).join('\n') || '暂无权限',
-      `我的权限（${permissionCount.value} 项）`,
-      { customStyle: { whiteSpace: 'pre-wrap' } }
-    )
+    router.push({ path: '/profile', query: { tab: 'permissions' } })
     return
   }
   await ElMessageBox.confirm('确认退出登录吗？', '提示', { type: 'warning' })

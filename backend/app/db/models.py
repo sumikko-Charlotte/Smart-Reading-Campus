@@ -55,6 +55,8 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(128), default="")
     avatar_url: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(16), default=UserStatus.ACTIVE.value)
+    # 注册用户存 PBKDF2 哈希；演示账号为空，登录时回退到统一演示密码，见 core/security.py
+    password_hash: Mapped[str] = mapped_column(String(160), default="", server_default="")
     # 权限分配：角色给默认值，这里存「额外授予」和「显式收回」，见 core/permissions.py
     granted_permissions: Mapped[list] = mapped_column(JSON, default=list)
     revoked_permissions: Mapped[list] = mapped_column(JSON, default=list)
@@ -258,6 +260,29 @@ class PermissionLog(Base, TimestampMixin):
     before_value: Mapped[str] = mapped_column(String(64), default="")
     after_value: Mapped[str] = mapped_column(String(64), default="")
     remark: Mapped[str] = mapped_column(String(255), default="")
+
+
+class PermissionRequest(Base, TimestampMixin):
+    """权限申请单：学生 / 管理员说明理由申请权限，系统管理员审批。
+
+    一条申请可包含多个权限点，整单通过或整单驳回。审批通过时把权限写进
+    `User.granted_permissions`，并同步记一条 `PermissionLog`，两条记录互相可追溯。
+    """
+
+    __tablename__ = "permission_requests"
+
+    request_id: Mapped[str] = _id("permission_request")
+    user_id: Mapped[str] = mapped_column(String(24), index=True)
+    user_name: Mapped[str] = mapped_column(String(64), default="")
+    student_no: Mapped[str] = mapped_column(String(32), default="")
+    user_role: Mapped[str] = mapped_column(String(16), default="", index=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reviewer_id: Mapped[str] = mapped_column(String(24), default="")
+    reviewer_name: Mapped[str] = mapped_column(String(64), default="")
+    review_comment: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ------------------------------------------------------------ 第二阶段②：AI 数据层

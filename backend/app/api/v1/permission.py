@@ -6,13 +6,15 @@
 3. `system:permission` 只能由系统管理员天然拥有，不能授予他人；
 4. 每次变更都写 permission_logs，谁在什么时候动了谁的权限可追溯。
 """
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
 from app.api.v1.user import user_out
-from app.core.enums import UserRole
+from app.core.enums import PermissionRequestStatus, UserRole
 from app.core.permissions import (
     ALL_PERMISSIONS,
     NON_DELEGABLE,
@@ -26,12 +28,15 @@ from app.core.permissions import Permission
 from app.core.response import CODE_FORBIDDEN, CODE_ILLEGAL_STATE, CODE_NOT_FOUND, CODE_PARAM_ERROR, BizError, ok, page_result
 from app.core.security import CurrentUser, get_current_user, new_id, require_permissions
 from app.db.base import get_db
-from app.db.models import PermissionLog, User
+from app.db.models import PermissionLog, PermissionRequest, User
 from app.schemas.common import PageQuery
 from app.schemas.user import (
     PermissionCatalogResponse,
     PermissionGrantRequest,
     PermissionLogOut,
+    PermissionRequestCreate,
+    PermissionRequestOut,
+    PermissionReviewRequest,
     PermissionSummary,
     RoleUpdateRequest,
 )
@@ -41,8 +46,9 @@ router = APIRouter(tags=["权限管理"])
 SUPER_ONLY = Depends(require_permissions(Permission.SYSTEM_PERMISSION))
 
 
-@router.get("/permissions/catalog", summary="权限目录（分组 + 各角色默认权限）", dependencies=[SUPER_ONLY])
-def permission_catalog():
+@router.get("/permissions/catalog", summary="权限目录（分组 + 各角色默认权限）")
+def permission_catalog(current: CurrentUser = Depends(get_current_user)):
+    """目录本身不含敏感信息：个人中心要用它渲染「我能申请哪些权限」，因此登录即可读。"""
     return ok(
         PermissionCatalogResponse(
             groups=permission_groups(),
@@ -217,3 +223,221 @@ def list_permission_logs(
     ).all()
     items = [PermissionLogOut.model_validate(r).model_dump() for r in rows]
     return ok(page_result(items, pq.page, pq.page_size, total))
+
+
+# ---------------------------------------------------------------- 权限申请
+#
+# 学生 / 管理员在个人中心提交申请 → 只有系统管理员能看到全部申请并审批。
+# 通过时权限即刻写入 target.granted_permissions，同时补一条 PermissionLog，
+# 所以「申请单」和「变更流水」两条线可以互相印证。
+
+REQUEST_STATUS_LABELS = {
+    PermissionRequestStatus.PENDING.value: "待审批",
+    PermissionRequestStatus.APPROVED.value: "已通过",
+    PermissionRequestStatus.REJECTED.value: "已驳回",
+    PermissionRequestStatus.CANCELLED.value: "已撤回",
+}
+
+
+def _request_out(row: PermissionRequest) -> dict:
+    data = PermissionRequestOut.model_validate(row).model_dump()
+    data["role_label"] = ROLE_LABELS.get(row.user_role, row.user_role)
+    data["status_label"] = REQUEST_STATUS_LABELS.get(row.status, row.status)
+    return data
+
+
+def _request_query(status: str, role: str, keyword: str):
+    stmt = select(PermissionRequest)
+    if status:
+        stmt = stmt.where(PermissionRequest.status == status)
+    if role:
+        stmt = stmt.where(PermissionRequest.user_role == role)
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(
+            PermissionRequest.user_name.like(like)
+            | PermissionRequest.student_no.like(like)
+            | PermissionRequest.reason.like(like)
+        )
+    return stmt
+
+
+@router.post("/permission-requests", status_code=201, summary="提交权限申请（学生 / 管理员）")
+def create_permission_request(
+    payload: PermissionRequestCreate,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    codes = sorted({code.strip() for code in payload.permissions if code.strip()})
+    if not codes:
+        raise BizError(CODE_PARAM_ERROR, "请至少选择一个权限")
+    unknown = set(codes) - ALL_PERMISSIONS
+    if unknown:
+        raise BizError(CODE_PARAM_ERROR, f"未知权限码：{', '.join(sorted(unknown))}")
+    if set(codes) & NON_DELEGABLE:
+        raise BizError(CODE_FORBIDDEN, "该权限仅系统管理员拥有，不能申请", http_status=403)
+
+    row = db.get(User, current.user_id)
+    if row is None:
+        raise BizError(CODE_NOT_FOUND, "用户不存在")
+    if row.role == UserRole.SUPER_ADMIN.value:
+        raise BizError(CODE_PARAM_ERROR, "系统管理员已拥有全部权限，无需申请")
+
+    owned = effective_permissions(row.role, row.granted_permissions, row.revoked_permissions)
+    wanted = [code for code in codes if code not in owned]
+    if not wanted:
+        raise BizError(CODE_ILLEGAL_STATE, "所选权限你当前已经拥有，无需申请")
+
+    pending = db.scalars(
+        select(PermissionRequest).where(
+            PermissionRequest.user_id == current.user_id,
+            PermissionRequest.status == PermissionRequestStatus.PENDING.value,
+        )
+    ).all()
+    duplicated = sorted({code for item in pending for code in (item.permissions or [])} & set(wanted))
+    if duplicated:
+        raise BizError(CODE_ILLEGAL_STATE, f"以下权限已在审批中：{', '.join(duplicated)}")
+
+    request = PermissionRequest(
+        request_id=new_id("permission_request"),
+        user_id=row.user_id,
+        user_name=row.name,
+        student_no=row.student_no,
+        user_role=row.role,
+        permissions=wanted,
+        reason=payload.reason.strip(),
+        status=PermissionRequestStatus.PENDING.value,
+    )
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    return ok(_request_out(request))
+
+
+@router.get("/permission-requests/mine", summary="我的权限申请记录")
+def list_my_permission_requests(
+    pq: PageQuery = Depends(page_query),
+    status: str = Query(default=""),
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if status and status not in REQUEST_STATUS_LABELS:
+        raise BizError(CODE_PARAM_ERROR, "status 不合法")
+    stmt = select(PermissionRequest).where(PermissionRequest.user_id == current.user_id)
+    if status:
+        stmt = stmt.where(PermissionRequest.status == status)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(
+        stmt.order_by(PermissionRequest.created_at.desc())
+        .offset((pq.page - 1) * pq.page_size)
+        .limit(pq.page_size)
+    ).all()
+    return ok(page_result([_request_out(r) for r in rows], pq.page, pq.page_size, total))
+
+
+@router.post("/permission-requests/{request_id}/cancel", summary="撤回自己的待审批申请")
+def cancel_permission_request(
+    request_id: str,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(PermissionRequest, request_id)
+    if row is None or row.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "申请不存在")
+    if row.user_id != current.user_id:
+        raise BizError(CODE_FORBIDDEN, "只能撤回自己的申请", http_status=403)
+    if row.status != PermissionRequestStatus.PENDING.value:
+        raise BizError(CODE_ILLEGAL_STATE, "只有待审批的申请才能撤回")
+    row.status = PermissionRequestStatus.CANCELLED.value
+    db.commit()
+    db.refresh(row)
+    return ok(_request_out(row))
+
+
+@router.get("/permission-requests/summary", summary="申请单统计（系统管理员）", dependencies=[SUPER_ONLY])
+def permission_request_summary(db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(PermissionRequest.status, func.count()).group_by(PermissionRequest.status)
+    ).all()
+    counts = {status: 0 for status in REQUEST_STATUS_LABELS}
+    for status, count in rows:
+        counts[status] = count
+    return ok({"counts": counts, "pending": counts.get(PermissionRequestStatus.PENDING.value, 0)})
+
+
+@router.get("/permission-requests", summary="全部权限申请（仅系统管理员）", dependencies=[SUPER_ONLY])
+def list_permission_requests(
+    pq: PageQuery = Depends(page_query),
+    status: str = Query(default="", description="pending / approved / rejected / cancelled"),
+    role: str = Query(default="", description="student / admin"),
+    db: Session = Depends(get_db),
+):
+    if status and status not in REQUEST_STATUS_LABELS:
+        raise BizError(CODE_PARAM_ERROR, "status 不合法")
+    stmt = _request_query(status, role, pq.keyword)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(
+        stmt.order_by(PermissionRequest.created_at.desc())
+        .offset((pq.page - 1) * pq.page_size)
+        .limit(pq.page_size)
+    ).all()
+    return ok(page_result([_request_out(r) for r in rows], pq.page, pq.page_size, total))
+
+
+@router.post("/permission-requests/{request_id}/review", summary="审批权限申请（仅系统管理员）", dependencies=[SUPER_ONLY])
+def review_permission_request(
+    request_id: str,
+    payload: PermissionReviewRequest,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(PermissionRequest, request_id)
+    if row is None or row.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "申请不存在")
+    if row.status != PermissionRequestStatus.PENDING.value:
+        raise BizError(CODE_ILLEGAL_STATE, "该申请已处理，不能重复审批")
+    if row.user_id == current.user_id:
+        raise BizError(CODE_FORBIDDEN, "不能审批自己提交的申请", http_status=403)
+
+    target = db.get(User, row.user_id)
+    if target is None or target.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "申请人已不存在")
+    if target.role == UserRole.SUPER_ADMIN.value:
+        raise BizError(CODE_FORBIDDEN, "系统管理员权限不通过申请单调整", http_status=403)
+
+    granted_now: list[str] = []
+    if payload.approve:
+        granted = set(target.granted_permissions or [])
+        revoked = set(target.revoked_permissions or [])
+        defaults = ROLE_DEFAULT_PERMISSIONS.get(target.role, set())
+        before = effective_permissions(target.role, granted, revoked)
+        for code in row.permissions or []:
+            if code in before:
+                continue
+            if code in defaults:
+                revoked.discard(code)
+            else:
+                granted.add(code)
+            granted_now.append(code)
+        if granted_now:
+            target.granted_permissions = sorted(granted)
+            target.revoked_permissions = sorted(revoked)
+            after = effective_permissions(target.role, granted, revoked)
+            for code in granted_now:
+                _log(
+                    db, current, target, "grant", code,
+                    "无权限" if code not in before else "有权限",
+                    "有权限" if code in after else "无权限",
+                    f"权限申请通过：{row.reason[:80]}",
+                )
+
+    row.status = (
+        PermissionRequestStatus.APPROVED.value if payload.approve else PermissionRequestStatus.REJECTED.value
+    )
+    row.reviewer_id = current.user_id
+    row.reviewer_name = current.name or "系统管理员"
+    row.review_comment = payload.comment.strip()
+    row.reviewed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    return ok({"request": _request_out(row), "granted": granted_now, "user": user_out(target, current)})
