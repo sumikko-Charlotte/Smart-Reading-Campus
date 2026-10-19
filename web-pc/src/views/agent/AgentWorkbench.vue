@@ -1,32 +1,5 @@
 <template>
   <div class="agent-workbench">
-    <!-- 模型状态：不可用时说明是降级在跑，避免被误认为"AI 坏了" -->
-    <el-alert
-      v-if="health && !health.available"
-      type="warning"
-      show-icon
-      :closable="false"
-      class="status-bar"
-    >
-      <template #title>
-        当前为降级模式运行：{{ health.reason }}。四个场景仍可正常出水，但不做语义理解。
-      </template>
-    </el-alert>
-
-    <!-- 数据来源：模拟数据必须说清楚，否则演示时容易被当成真实馆藏行为 -->
-    <el-alert
-      v-if="dataset && dataset.has_simulated"
-      type="info"
-      show-icon
-      :closable="false"
-      class="status-bar"
-    >
-      <template #title>
-        当前数据包含 AI 模拟样本（模拟学生 {{ dataset.users.simulated || 0 }} 人、借阅
-        {{ dataset.borrows.simulated || 0 }} 条）。真实脱敏数据到位后可一键替换。
-      </template>
-    </el-alert>
-
     <el-row :gutter="16">
       <!-- 左：选场景 + 填需求 -->
       <el-col :xs="24" :md="9">
@@ -35,7 +8,7 @@
             <div class="panel-head">
               <span>选一个场景</span>
               <el-tag v-if="health" size="small" :type="health.available ? 'success' : 'warning'" effect="plain">
-                {{ health.available ? health.model : '降级模式' }}
+                {{ health.available ? health.model : '规则引擎' }}
               </el-tag>
             </div>
           </template>
@@ -96,12 +69,13 @@
               <el-form-item label="选一场活动">
                 <el-select v-model="form.activity_id" filterable clearable placeholder="选择活动" style="width: 100%">
                   <el-option
-                    v-for="act in activities"
+                    v-for="act in selectableActivities"
                     :key="act.activity_id"
                     :label="`${act.title}（${act.status}）`"
                     :value="act.activity_id"
                   />
                 </el-select>
+                <div v-if="!canManageAllActivities" class="form-hint">只能为自己发布的活动生成文案</div>
               </el-form-item>
               <el-form-item label="没有指定活动时，用主题词">
                 <el-input v-model="form.topic" placeholder="例：秋季读书分享会" maxlength="60" />
@@ -140,12 +114,8 @@
         <!-- 空态 -->
         <el-card v-if="!result && !loading" shadow="never" class="panel empty-panel">
           <div class="empty-hint">
-            <div class="empty-title">与「接 API」的区别在这里</div>
-            <p>
-              以前是把提示词发给模型、拿回一段文字。现在你只描述目标，智能体自己决定去查什么：
-              先看你的借阅画像，再按分类找候选，再核对库存，最后才写理由。
-            </p>
-            <p>它每查一次，右边就会多一条轨迹——那是它真正做过的事。</p>
+            <div class="empty-title">选一个场景开始</div>
+            <p>填写左侧需求并运行，右侧会展示它查过的数据和最终结果。</p>
           </div>
         </el-card>
 
@@ -162,16 +132,11 @@
                 <el-tag size="small" effect="plain">{{ result.steps }} 步</el-tag>
                 <el-tag size="small" effect="plain">{{ result.tokens }} tokens</el-tag>
                 <el-tag size="small" effect="plain">{{ result.elapsed_ms }} ms</el-tag>
-                <el-tag v-if="result.degraded" size="small" type="warning">降级</el-tag>
               </div>
             </div>
           </template>
 
-          <el-alert v-if="result.degraded" type="warning" :closable="false" show-icon class="degrade-note">
-            {{ result.degraded_reason }}
-          </el-alert>
-
-          <!-- 轨迹：这是"智能体"和"调 API"最直观的差别 -->
+          <!-- 轨迹 -->
           <el-timeline v-if="result.trace && result.trace.length" class="trace">
             <el-timeline-item
               v-for="(step, index) in result.trace"
@@ -289,7 +254,7 @@
               type="warning"
               :closable="false"
               show-icon
-              title="AI 只出草稿，不会自动发送"
+              title="发送前请核对内容"
               description="确认时间、地点、名额无误后，由主办方手动发布。"
             />
             <div v-if="result.result.risk_notes?.length" class="field-block">
@@ -333,8 +298,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Link } from '@element-plus/icons-vue'
-import { agentDataset, agentHealth, agentTools, runAgent } from '@/api/agent'
-import { listActivities } from '@/api/activity'
+import { agentHealth, agentTools, runAgent } from '@/api/agent'
+import { getActivityFeed, listActivities } from '@/api/activity'
+import { PERM } from '@/constants'
 import { useUserStore } from '@/store/user'
 
 const store = useUserStore()
@@ -343,7 +309,6 @@ const scene = ref('match')
 const loading = ref(false)
 const result = ref(null)
 const health = ref(null)
-const dataset = ref(null)
 const scenes = ref([])
 const activities = ref([])
 
@@ -359,8 +324,19 @@ const form = reactive({
   question: ''
 })
 
-/** 只展示当前账号有权限调用的场景，避免点进去才发现 403 */
-const visibleScenes = computed(() => scenes.value.filter((item) => store.can(item.permission)))
+/** 只展示当前账号可用的场景，避免点进去才发现 403 */
+const visibleScenes = computed(() =>
+  scenes.value.filter((item) => (typeof item.allowed === 'boolean' ? item.allowed : store.can(item.permission)))
+)
+
+const isStaff = computed(() => ['admin', 'super_admin'].includes(store.profile?.role))
+const canManageAllActivities = computed(() => isStaff.value || store.can(PERM.ACTIVITY_MANAGE_ALL))
+/** 有全站管理权的人可以给任意活动写文案，其他人只列自己组织的 */
+const selectableActivities = computed(() =>
+  canManageAllActivities.value
+    ? activities.value
+    : activities.value.filter((act) => act.organizer_id === store.profile?.user_id)
+)
 
 function switchScene(next) {
   scene.value = next
@@ -384,9 +360,6 @@ async function run() {
   try {
     const data = await runAgent(scene.value, payload)
     result.value = data
-    if (data.degraded) {
-      ElMessage.warning('本次为降级结果，原因见上方提示')
-    }
   } catch (error) {
     // 拦截器已提示，这里只保证不留下 loading
     result.value = null
@@ -413,14 +386,9 @@ async function copy(text) {
 
 onMounted(async () => {
   try {
-    const [toolData, healthData, datasetData] = await Promise.all([
-      agentTools(),
-      agentHealth(),
-      agentDataset()
-    ])
+    const [toolData, healthData] = await Promise.all([agentTools(), agentHealth()])
     scenes.value = toolData.scenes || []
     health.value = healthData
-    dataset.value = datasetData
     // 默认落到第一个有权限的场景
     const first = visibleScenes.value[0]
     if (first) scene.value = first.scene
@@ -429,8 +397,14 @@ onMounted(async () => {
   }
 
   try {
-    const list = await listActivities({ page: 1, page_size: 50 })
-    activities.value = list.list || []
+    if (canManageAllActivities.value) {
+      const list = await listActivities({ page: 1, page_size: 50 })
+      activities.value = list.list || []
+    } else {
+      // 学生用「我发布的」取数，草稿和待审批的活动也能选到
+      const data = await getActivityFeed({ page: 1, page_size: 50, scope: 'mine' })
+      activities.value = (data.list || []).filter((item) => item.item_type === 'activity')
+    }
   } catch {
     activities.value = []
   }
@@ -496,6 +470,12 @@ onMounted(async () => {
   margin-top: 6px;
 }
 .scene-form {
+  margin-top: 4px;
+}
+.form-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
   margin-top: 4px;
 }
 .run-btn {

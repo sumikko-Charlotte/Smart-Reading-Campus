@@ -132,7 +132,7 @@ def intake(db: Session, raw_text: str, isbn: str = "", title: str = "") -> dict[
         "book": book,
         "confidence": 0.3,
         "missing_fields": missing,
-        "review_notes": ["降级模式只做了字段抽取，分类号与馆藏地需要编目老师补充"],
+        "review_notes": ["已按规则抽取字段，分类号与馆藏地需图书馆老师补充"],
     }
 
 
@@ -223,13 +223,13 @@ def match(db: Session, user_id: str, query: str, limit: int) -> dict[str, Any]:
         )
 
     if not major_cls:
-        explanation = "降级模式：暂无借阅画像，按馆内热度推荐。"
+        explanation = "暂无借阅画像，先按馆内热度推荐。"
     elif basis_hit == 0:
-        explanation = "降级模式：你常读的分类暂无可借新书，以下为同馆热门兜底。"
+        explanation = "你常读的分类暂无可借新书，以下为同馆热门。"
     elif basis_hit < len(items):
-        explanation = f"降级模式：{len(items)} 本中 {basis_hit} 本命中你的借阅偏好，其余为热门兜底。"
+        explanation = f"{len(items)} 本中 {basis_hit} 本命中你的借阅偏好，其余为热门。"
     else:
-        explanation = f"降级模式：{basis_hit} 本均命中你的借阅偏好（同分类或关键词），未使用语义理解。"
+        explanation = f"{basis_hit} 本均命中你的借阅偏好（同分类或关键词）。"
     return {"strategy": strategy, "items": items, "explanation": explanation}
 
 
@@ -279,7 +279,7 @@ def outreach(db: Session, activity_id: str, topic: str, channel: str) -> dict[st
         "push_text": _cut(f"{activity.title}｜{when}｜{activity.location or '校内'}，剩余 {left} 个名额", 60),
         "tags": ["阅读推广", activity.category],
         "audience_hint": "全校学生",
-        "risk_notes": ["降级模式使用模板生成，时间地点请与活动详情再核对一次"],
+        "risk_notes": ["文案由模板生成，时间地点请与活动详情再核对一次"],
     }
 
 

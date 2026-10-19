@@ -168,6 +168,7 @@ class ActivitySignup(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     signed_up_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     checked_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checked_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     certificate_no: Mapped[str] = mapped_column(String(32), default="")
 
 

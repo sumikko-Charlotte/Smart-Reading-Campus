@@ -143,7 +143,7 @@ def publish_summary(
             db,
             audience,
             type=NotificationType.ACTIVITY_SUMMARY.value,
-            title=f"你参加的活动发布了回顾：{row.title}",
+            title=f"你参加的活动发布了总结：{row.title}",
             content=row.content[:200],
             ref_type="activity_summary",
             ref_id=row.summary_id,
@@ -155,7 +155,7 @@ def publish_summary(
         svc.notify(
             db,
             type=NotificationType.ACTIVITY_SUMMARY.value,
-            title=f"活动回顾：{row.title}",
+            title=f"活动总结：{row.title}",
             content=row.content[:200],
             ref_type="activity_summary",
             ref_id=row.summary_id,
@@ -169,7 +169,7 @@ def publish_summary(
         svc.notify(
             db,
             type=NotificationType.ACTIVITY_SUMMARY.value,
-            title=f"活动回顾：{row.title}",
+            title=f"活动总结：{row.title}",
             content=row.content[:200],
             ref_type="activity_summary",
             ref_id=row.summary_id,

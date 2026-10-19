@@ -12,6 +12,12 @@
       </div>
       <div>
         <el-button @click="$router.push('/activities')">返回列表</el-button>
+        <template v-if="!store.isStaff">
+          <el-button v-if="canSignupNow" type="primary" :loading="acting" @click="onSignup">报名参加</el-button>
+          <el-button v-if="canCheckinNow" type="warning" :loading="acting" @click="onCheckin">签到</el-button>
+          <el-button v-if="canCheckoutNow" type="success" :loading="acting" @click="onCheckout">签退</el-button>
+          <el-button v-if="mySignup?.checked_out_at" type="primary" plain @click="$router.push('/certificates')">我的证书</el-button>
+        </template>
         <el-button
           v-if="canOperate && !['finished', 'pending_review'].includes(detail.status)"
           type="primary"
@@ -40,7 +46,7 @@
             <el-descriptions-item label="报名时间">{{ formatRange(detail.signup_start_at, detail.signup_end_at) }}</el-descriptions-item>
             <el-descriptions-item label="主办方">{{ detail.organizer_name || '—' }}</el-descriptions-item>
             <el-descriptions-item label="名额">{{ detail.capacity || '不限' }}</el-descriptions-item>
-            <el-descriptions-item label="电子证书">{{ detail.need_certificate ? '活动结束后颁发' : '不颁发' }}</el-descriptions-item>
+            <el-descriptions-item label="电子证书">{{ detail.need_certificate ? '签到并签退后自动发放' : '不颁发' }}</el-descriptions-item>
             <el-descriptions-item label="活动等级">
               <el-tag v-if="detail.level && detail.level !== 'none'" :type="typeOf(ACTIVITY_LEVEL, detail.level)" effect="plain">
                 {{ labelOf(ACTIVITY_LEVEL, detail.level) }}
@@ -84,7 +90,7 @@
             :closable="false"
             show-icon
             title="报名名单与扫码签到"
-            description="报名/签到明细由 ActivitySignup 承载，第 2 轮实现名单导出与扫码签到看板。"
+            description="报名与签到记录可在活动运营中查看。"
           />
         </div>
 
@@ -105,7 +111,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getActivity, submitActivity } from '@/api/activity'
+import { checkinActivity, checkoutActivity, getActivity, signupActivity, submitActivity } from '@/api/activity'
 import { getActivitySummary } from '@/api/summary'
 import { useUserStore } from '@/store/user'
 import { ACTIVITY_CATEGORY, ACTIVITY_LEVEL, ACTIVITY_STATUS, PERM, labelOf, typeOf } from '@/constants'
@@ -116,6 +122,28 @@ const store = useUserStore()
 const loading = ref(false)
 const detail = ref({})
 const hasSummary = ref(false)
+const acting = ref(false)
+
+const mySignup = computed(() => detail.value.my_signup || null)
+
+const canSignupNow = computed(() => {
+  if (!store.can(PERM.ACTIVITY_SIGNUP) || mySignup.value) return false
+  if (detail.value.status !== 'published') return false
+  const now = Date.now()
+  const end = Date.parse(detail.value.signup_end_at || detail.value.start_at || '')
+  return now < end && now < Date.parse(detail.value.start_at || '')
+})
+
+const canCheckinNow = computed(() => {
+  const signup = mySignup.value
+  if (!signup || signup.status !== 'approved' || signup.checked_in_at) return false
+  return ['published', 'signup_closed', 'ongoing', 'finished'].includes(detail.value.status)
+})
+
+const canCheckoutNow = computed(() => {
+  const signup = mySignup.value
+  return Boolean(signup?.checked_in_at && !signup?.checked_out_at)
+})
 
 const canOperate = computed(() => {
   if (store.can(PERM.ACTIVITY_MANAGE_ALL)) return true
@@ -156,16 +184,57 @@ async function onSubmitReview() {
   }
 }
 
+async function reload() {
+  detail.value = await getActivity(route.params.id)
+  try {
+    await getActivitySummary(route.params.id)
+    hasSummary.value = true
+  } catch {
+    hasSummary.value = false
+  }
+}
+
+async function onSignup() {
+  acting.value = true
+  try {
+    await signupActivity(detail.value.activity_id)
+    ElMessage.success('报名成功')
+    await reload()
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onCheckin() {
+  acting.value = true
+  try {
+    await checkinActivity(detail.value.activity_id)
+    ElMessage.success('签到成功')
+    await reload()
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onCheckout() {
+  acting.value = true
+  try {
+    const data = await checkoutActivity(detail.value.activity_id)
+    if (data?.certificate) {
+      ElMessage.success('签退成功，证书已发放，可在「我的证书」下载')
+    } else {
+      ElMessage.success('签退成功')
+    }
+    await reload()
+  } finally {
+    acting.value = false
+  }
+}
+
 onMounted(async () => {
   loading.value = true
   try {
-    detail.value = await getActivity(route.params.id)
-    try {
-      await getActivitySummary(route.params.id)
-      hasSummary.value = true
-    } catch {
-      hasSummary.value = false
-    }
+    await reload()
   } finally {
     loading.value = false
   }

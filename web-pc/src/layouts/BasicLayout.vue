@@ -5,7 +5,7 @@
         <span class="brand-logo">智</span>
         <div class="brand-text">
           <strong>智阅校园</strong>
-          <small>PC 端平台 · 第二阶段</small>
+          <small>PC 端平台</small>
         </div>
       </div>
 
@@ -33,9 +33,9 @@
         </div>
 
         <div class="header-right">
-          <el-tooltip content="接口连通性检查" placement="bottom">
+          <el-tooltip content="服务状态" placement="bottom">
             <el-tag :type="healthOk ? 'success' : 'danger'" effect="plain" size="small" class="health-tag">
-              {{ healthOk ? '后端已连通' : '后端未连通' }}
+              {{ healthOk ? '服务正常' : '服务异常' }}
             </el-tag>
           </el-tooltip>
 
@@ -71,7 +71,7 @@
           type="info"
           :closable="false"
           show-icon
-          title="访客模式：可浏览活动、查看漂流池、使用 AI 推荐（演示数据），不能报名或参与漂流。"
+          title="访客模式：以浏览为主，可在个人中心申请更多权限。"
         />
         <router-view v-slot="{ Component }">
           <keep-alive :max="5">
@@ -104,9 +104,7 @@ const menus = [
   { path: '/dashboard', title: '首页概览', icon: 'Odometer', permission: PERM.ACTIVITY_VIEW },
   { path: '/activities', title: '活动', icon: 'Calendar', permission: PERM.ACTIVITY_VIEW },
   { path: '/activities/review', title: '活动审批', icon: 'Stamp', permission: PERM.ACTIVITY_REVIEW },
-  { path: '/summaries', title: '活动回顾', icon: 'Notebook', permission: PERM.ACTIVITY_VIEW },
-  { path: '/certificates', title: '我的证书', icon: 'Medal', permission: PERM.CERTIFICATE_VIEW },
-  { path: '/certificates/manage', title: '证书管理', icon: 'Files', permission: PERM.CERTIFICATE_ISSUE },
+  { path: '/certificates', title: '我的证书', icon: 'Medal', permission: PERM.CERTIFICATE_VIEW, roles: ['student'] },
   { path: '/ai/recommend', title: 'AI 智能推荐', icon: 'MagicStick', permission: PERM.AI_RECOMMEND },
   { path: '/agents', title: '智能体工作台', icon: 'Cpu', permission: PERM.AI_RECOMMEND },
   { path: '/ai/assistant', title: 'AI 阅读助手', icon: 'ChatDotRound', permission: PERM.AI_CHAT },
@@ -115,7 +113,13 @@ const menus = [
   { path: '/profile', title: '个人中心', icon: 'Avatar' }
 ]
 
-const visibleMenus = computed(() => menus.filter((m) => !m.permission || store.can(m.permission)))
+const visibleMenus = computed(() =>
+  menus.filter(
+    (m) =>
+      (!m.permission || store.can(m.permission)) &&
+      (!m.roles || m.roles.includes(store.role))
+  )
+)
 const activeMenu = computed(() => route.meta.activeMenu || route.path)
 const roleType = computed(() => typeOf(USER_ROLE, store.role))
 const permissionCount = computed(() => store.permissions.length)

@@ -34,16 +34,6 @@
         <el-divider direction="vertical" />
         <el-link :underline="false" @click="onGuest">以访客身份浏览</el-link>
       </div>
-
-      <el-collapse class="demo-collapse">
-        <el-collapse-item title="演示账号（密码 123456）" name="demo">
-          <div class="demo-accounts">
-            <el-tag v-for="acc in demoAccounts" :key="acc.no" class="demo-tag" @click="fill(acc.no)">
-              {{ acc.no }} · {{ acc.label }}
-            </el-tag>
-          </div>
-        </el-collapse-item>
-      </el-collapse>
     </div>
   </div>
 </template>
@@ -67,20 +57,6 @@ const form = reactive({ student_no: '', password: '' })
 const rules = {
   student_no: [{ required: true, message: '请输入学号或工号', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
-}
-
-const demoAccounts = [
-  { no: 'admin', label: '系统管理员' },
-  { no: 'T2009', label: '管理员（可审批）' },
-  { no: 'T2010', label: '管理员（无审批权）' },
-  { no: '2025211994', label: '学生·可申办活动' },
-  { no: '2025211987', label: '学生（Alice）' },
-  { no: 'guest', label: '访客' }
-]
-
-function fill(no) {
-  form.student_no = no
-  form.password = '123456'
 }
 
 async function onSubmit() {
@@ -201,20 +177,4 @@ async function onGuest() {
   color: #6b7280;
 }
 
-.demo-collapse {
-  margin-top: 10px;
-  border-top: none;
-}
-
-.demo-accounts {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.demo-tag {
-  cursor: pointer;
-  width: 100%;
-  text-align: center;
-}
 </style>

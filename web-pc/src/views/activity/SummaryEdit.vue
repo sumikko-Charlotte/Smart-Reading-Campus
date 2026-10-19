@@ -4,7 +4,7 @@
       <div>
         <h2 class="page-title">活动总结</h2>
         <p class="page-desc">
-          {{ activity?.title || '加载中…' }} —— 活动结束后撰写图文回顾，发布后推送到所选角色的消息流。
+          {{ activity?.title || '加载中…' }} —— 活动结束后撰写图文总结，发布后进入活动流。
         </p>
       </div>
       <el-button @click="$router.push('/activities')">返回</el-button>
@@ -30,7 +30,7 @@
                 v-model="imagesText"
                 type="textarea"
                 :rows="2"
-                placeholder="每行一个图片 URL，最多 9 张（第 3 阶段接对象存储后改为直接上传）"
+                placeholder="每行一个图片 URL，最多 9 张"
               />
             </el-form-item>
           </el-form>
@@ -58,7 +58,7 @@
             type="info"
             :closable="false"
             show-icon
-            title="发布后写入各角色的消息流；访客在「活动回顾」页也能看到。"
+            title="发布后进入活动流，所有角色都能看到。"
           />
         </div>
 

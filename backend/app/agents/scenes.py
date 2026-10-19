@@ -62,19 +62,35 @@ def _should_fallback() -> tuple[bool, str]:
     return (not available), reason
 
 
+def _with_confirm_note(data: dict[str, Any], note: str) -> dict[str, Any]:
+    """重复书目不需要再提交入库，只有新书才追加确认提示。"""
+    if (data.get("duplicate") or {}).get("is_duplicate"):
+        return data
+    data["review_notes"] = list(dict.fromkeys([*(data.get("review_notes") or []), note]))
+    return data
+
+
 # ------------------------------------------------------------------ AI 录书
 
 
-def run_intake(db: Session, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def run_intake(db: Session, user_id: str, payload: dict[str, Any], role: str = "admin") -> dict[str, Any]:
     raw_text = str(payload.get("raw_text") or "").strip()
     isbn = str(payload.get("isbn") or "").strip()
     title = str(payload.get("title") or "").strip()
     if not any((raw_text, isbn, title)):
         raise ValueError("raw_text / isbn / title 至少提供一个")
 
+    # 学生用这个场景是把书交给图书馆，不是自己入库；提示语要跟着身份变
+    confirm_note = (
+        "把这份书目提交给图书馆老师确认后即可入库"
+        if role == "student"
+        else "本记录需编目老师确认后方可入库"
+    )
+
     fallback_flag, fallback_reason = _should_fallback()
     if fallback_flag:
-        return _result(SCENE_INTAKE, fallback.intake(db, raw_text, isbn, title), degraded=True, reason=fallback_reason)
+        data = _with_confirm_note(fallback.intake(db, raw_text, isbn, title), confirm_note)
+        return _result(SCENE_INTAKE, data, degraded=True, reason=fallback_reason)
 
     ctx = ToolContext(db=db, user_id=user_id, scene=SCENE_INTAKE)
     message = f"待整理的书目信息：\nISBN：{isbn or '未提供'}\n书名：{title or '未提供'}\n原始文本：{raw_text or '未提供'}"
@@ -84,7 +100,7 @@ def run_intake(db: Session, user_id: str, payload: dict[str, Any]) -> dict[str, 
     book = data.get("book") or {}
     if run.degraded or not book.get("title"):
         # 模型没给出可用结构：先用规则版兜底，但要保留「降级」标记
-        merged = fallback.intake(db, raw_text, isbn, title)
+        merged = _with_confirm_note(fallback.intake(db, raw_text, isbn, title), confirm_note)
         if book:
             merged["model_partial"] = book
         return _result(SCENE_INTAKE, merged, degraded=True,
@@ -105,9 +121,8 @@ def run_intake(db: Session, user_id: str, payload: dict[str, Any]) -> dict[str, 
         duplicate["reason"] = "模型给出的重复书目标识不存在，已忽略"
     data["duplicate"] = duplicate
     data.setdefault("missing_fields", [])
-    data.setdefault("review_notes", [])
     # 录书永远需要人工确认，不给「自动入库」的口子
-    data["review_notes"] = list(dict.fromkeys([*data["review_notes"], "本记录需编目老师确认后方可入库"]))
+    data = _with_confirm_note(data, confirm_note)
     return _result(SCENE_INTAKE, data, run=run)
 
 
@@ -177,12 +192,26 @@ def run_match(db: Session, user_id: str, role: str, payload: dict[str, Any]) -> 
 # ------------------------------------------------------------------ AI 触达
 
 
-def run_outreach(db: Session, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def run_outreach(
+    db: Session,
+    user_id: str,
+    payload: dict[str, Any],
+    can_manage_all: bool = False,
+) -> dict[str, Any]:
     activity_id = str(payload.get("activity_id") or "").strip()
     topic = str(payload.get("topic") or "").strip()
     channel = str(payload.get("channel") or "push").strip()
     if not activity_id and not topic:
         raise ValueError("activity_id 与 topic 至少提供一个")
+
+    # 没有全站管理权的人（学生）只能给自己的活动写文案：
+    # 否则任何人都能拿到别人活动的报名人群分布。
+    if activity_id:
+        target = db.get(Activity, activity_id)
+        if target is None or target.is_deleted:
+            raise ValueError("活动不存在")
+        if not can_manage_all and target.organizer_id != user_id:
+            raise ValueError("只能为自己发布的活动生成文案")
 
     fallback_flag, fallback_reason = _should_fallback()
     if fallback_flag:

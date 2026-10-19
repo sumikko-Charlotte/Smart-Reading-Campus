@@ -16,7 +16,6 @@ export const PERM = {
   DRIFT_MANAGE: 'drift:manage',
   BOOK_MANAGE: 'book:manage',
   CERTIFICATE_VIEW: 'certificate:view',
-  CERTIFICATE_ISSUE: 'certificate:issue',
   AI_RECOMMEND: 'ai:recommend',
   AI_CHAT: 'ai:chat',
   SYSTEM_USER: 'system:user',
@@ -99,7 +98,7 @@ export const CERT_STATUS = [
 ]
 
 export const NOTIFICATION_TYPE = [
-  { value: 'activity_summary', label: '活动回顾', type: 'success' },
+  { value: 'activity_summary', label: '活动总结', type: 'success' },
   { value: 'activity_published', label: '活动发布', type: 'primary' },
   { value: 'activity_rejected', label: '活动驳回', type: 'danger' },
   { value: 'activity_cancelled', label: '活动取消', type: 'danger' },

@@ -8,9 +8,7 @@
             {{ unread }} 条未读
           </el-tag>
         </h2>
-        <p class="page-desc">
-          审批结果、权限变动、活动回顾与证书颁发都会送到这里；点开一条即视为已读，右上角红点同步减少。
-        </p>
+        <p class="page-desc">审批结果、权限变动、活动总结与证书颁发都会送到这里。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="fetchList()">刷新</el-button>
@@ -125,13 +123,13 @@ function onFilterChange() {
 function targetOf(row) {
   switch (row.ref_type) {
     case 'activity_summary':
-      return '/summaries'
+      return '/activities'
     case 'activity':
       return row.type === 'activity_review' ? '/activities/review' : `/activities/${row.ref_id}`
     case 'permission_request':
       return store.isSuperAdmin ? '/system/users?tab=requests' : '/profile?tab=requests'
     case 'certificate':
-      return '/certificates'
+      return store.role === 'student' ? '/certificates' : '/activities'
     case 'user':
       return '/profile'
     default:

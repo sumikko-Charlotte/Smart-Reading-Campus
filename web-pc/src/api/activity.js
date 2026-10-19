@@ -2,6 +2,9 @@
 import request from './request'
 
 export const listActivities = (params) => request.get('/activities', { params })
+export const getActivityFeed = (params) => request.get('/activities/feed', { params })
+export const checkinActivity = (id) => request.post(`/activities/${id}/checkin`, {})
+export const checkoutActivity = (id) => request.post(`/activities/${id}/checkout`, {})
 export const listManagedActivities = (params) => request.get('/activities/managed', { params })
 export const getActivity = (id) => request.get(`/activities/${id}`)
 export const createActivity = (data) => request.post('/activities', data)

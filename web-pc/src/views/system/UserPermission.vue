@@ -118,6 +118,7 @@
               <el-select v-model="requestQuery.role" placeholder="全部" clearable style="width: 130px">
                 <el-option label="学生" value="student" />
                 <el-option label="普通管理员" value="admin" />
+                <el-option label="访客" value="visitor" />
               </el-select>
             </el-form-item>
             <el-form-item label="关键词">

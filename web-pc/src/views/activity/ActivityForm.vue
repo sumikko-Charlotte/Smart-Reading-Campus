@@ -21,7 +21,7 @@
               <el-input v-model="form.title" maxlength="128" show-word-limit placeholder="如：「书海拾贝」秋季读书分享会" />
             </el-form-item>
             <el-form-item label="副标题">
-              <el-input v-model="form.subtitle" maxlength="255" placeholder="一句话卖点，展示在列表与小程序卡片上" />
+              <el-input v-model="form.subtitle" maxlength="255" placeholder="一句话卖点，展示在活动列表中" />
             </el-form-item>
             <el-form-item label="活动分类" prop="category">
               <el-select v-model="form.category" style="width: 220px">
@@ -32,13 +32,13 @@
               <el-input v-model="form.location" placeholder="如：图书馆三层报告厅 / 线上" />
             </el-form-item>
             <el-form-item label="封面图地址">
-              <el-input v-model="form.cover_url" placeholder="暂填 URL，第 2 轮接对象存储上传" />
+              <el-input v-model="form.cover_url" placeholder="封面图片地址" />
             </el-form-item>
             <el-form-item label="活动简介">
               <el-input v-model="form.summary" type="textarea" :rows="3" maxlength="255" show-word-limit placeholder="列表页展示的简介" />
             </el-form-item>
             <el-form-item label="活动详情">
-              <el-input v-model="form.content" type="textarea" :rows="6" placeholder="支持纯文本 / 简易 HTML，小程序端统一渲染" />
+              <el-input v-model="form.content" type="textarea" :rows="6" placeholder="活动详情" />
             </el-form-item>
           </el-form>
         </div>
@@ -70,7 +70,7 @@
               <el-switch v-model="form.need_certificate" />
             </el-form-item>
             <el-form-item v-if="form.need_certificate" label="证书模板">
-              <el-input v-model="form.certificate_template_id" placeholder="可留空；模板管理在后续阶段接入" />
+              <el-input v-model="form.certificate_template_id" placeholder="可留空" />
             </el-form-item>
           </el-form>
         </div>
@@ -86,7 +86,7 @@
             :closable="false"
             show-icon
             title="先保存活动，再生成推文"
-            description="推文生成后会自动回存到活动 ai_copy 字段（后端 POST /activities/{id}/ai-copy）。"
+            description="生成的内容会保存在活动信息中，可继续修改。"
           />
           <el-input v-else v-model="form.ai_copy" type="textarea" :rows="10" placeholder="点击「一键生成」调用 AI 生成小红书/公众号风格推文" />
         </div>

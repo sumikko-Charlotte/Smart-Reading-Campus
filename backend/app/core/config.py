@@ -41,15 +41,16 @@ class Settings(BaseSettings):
     # 大模型：填写 LLM_API_KEY 后默认启用；设为 false 可紧急关闭以免扣费
     LLM_ENABLED: bool = True
     # provider 只影响默认 base_url 的推断与错误提示，实际都走 OpenAI 兼容协议：
+    #   aliyun    阿里云百炼 MaaS 工作空间（需填 LLM_API_BASE）
     #   deepseek  https://api.deepseek.com/v1
     #   openai    https://api.openai.com/v1
     #   ollama    本地 http://127.0.0.1:11434/v1（无需 key）
     #   qwen      https://dashscope.aliyuncs.com/compatible-mode/v1
-    LLM_PROVIDER: str = "deepseek"
-    LLM_MODEL: str = "deepseek-chat"
-    LLM_API_BASE: str = "https://api.deepseek.com/v1"
+    LLM_PROVIDER: str = "aliyun"
+    LLM_MODEL: str = "qwen-plus"
+    LLM_API_BASE: str = ""
     LLM_API_KEY: str = ""
-    LLM_MAX_TOKENS: int = 512
+    LLM_MAX_TOKENS: int = 1024
     PROMPT_VERSION: str = "v1.0"
     # 智能体运行时：超时、重试写在这里，避免散落在各处
     LLM_TIMEOUT_SEC: float = 45.0

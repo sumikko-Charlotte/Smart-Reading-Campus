@@ -11,7 +11,7 @@
 | 审批/定级 | activity:review | 管理员（可被系统管理员收回） |
 | 写总结 | activity:summary | 管理员；主办方亦可 |
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select, update
@@ -28,6 +28,7 @@ from app.core.enums import (
     ActivityStatus,
     NotificationType,
     SignupStatus,
+    SummaryStatus,
 )
 from app.core.permissions import Permission
 from app.core.response import (
@@ -41,7 +42,7 @@ from app.core.response import (
 )
 from app.core.security import CurrentUser, get_current_user, get_optional_user, new_id, require_permissions
 from app.db.base import get_db
-from app.db.models import Activity, ActivitySignup, AIConversation, User
+from app.db.models import Activity, ActivitySignup, ActivitySummary, AIConversation, User
 from app.schemas.activity import (
     ActivityCreate,
     ActivityOut,
@@ -53,6 +54,7 @@ from app.schemas.activity import (
     ActivityUpdate,
     EmptyPayload,
 )
+from app.services import certificate_issue
 from app.schemas.common import PageQuery
 from app.services import llm_service
 from app.services import notification_service as svc
@@ -89,6 +91,29 @@ def _get_or_404(db: Session, activity_id: str) -> Activity:
     if row is None or row.is_deleted:
         raise BizError(CODE_NOT_FOUND, "活动不存在")
     return row
+
+
+def _my_signup(db: Session, activity_id: str, current: CurrentUser) -> dict | None:
+    """当前用户在这场活动里的报名与签到状态。"""
+    if not current.user_id:
+        return None
+    row = db.scalar(
+        select(ActivitySignup).where(
+            ActivitySignup.activity_id == activity_id,
+            ActivitySignup.user_id == current.user_id,
+            ActivitySignup.is_deleted.is_(False),
+        )
+    )
+    if row is None:
+        return None
+    return {
+        "signup_id": row.signup_id,
+        "status": row.status,
+        "signed_up_at": row.signed_up_at,
+        "checked_in_at": row.checked_in_at,
+        "checked_out_at": row.checked_out_at,
+        "certificate_no": row.certificate_no,
+    }
 
 
 def _can_manage(current: CurrentUser, row: Activity) -> bool:
@@ -352,6 +377,7 @@ def list_my_activities(
             "signup_status": signup.status,
             "signed_up_at": signup.signed_up_at,
             "checked_in_at": signup.checked_in_at,
+            "checked_out_at": signup.checked_out_at,
             "certificate_no": signup.certificate_no,
         }
         for signup, activity in rows
@@ -401,13 +427,271 @@ def list_managed_activities(
     return ok(page_result([_to_out(r, current) for r in rows], pq.page, pq.page_size, total))
 
 
+@router.get("/feed", summary="活动信息流（活动推送 + 活动总结，按时间与兴趣排序）")
+def activity_feed(
+    pq: PageQuery = Depends(page_query),
+    scope: str = Query(default="all", description="all / joined / mine"),
+    current: CurrentUser = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    if scope not in {"all", "joined", "mine"}:
+        raise BizError(CODE_PARAM_ERROR, "scope 仅支持 all / joined / mine")
+
+    public_statuses = [status.value for status in ACTIVITY_PUBLIC_STATUSES]
+    # 「我发布的」要能看见自己还没过审、被驳回或尚未发布的活动，否则申办完就查不到进度；
+    # 其他人的非公开活动仍不出现在信息流里。
+    activity_filter = [Activity.is_deleted.is_(False)]
+    if scope == "mine" and current.user_id:
+        activity_filter.append(
+            or_(Activity.status.in_(public_statuses), Activity.organizer_id == current.user_id)
+        )
+    else:
+        activity_filter.append(Activity.status.in_(public_statuses))
+    activities = db.scalars(select(Activity).where(*activity_filter)).all()
+    activity_map = {row.activity_id: row for row in activities}
+
+    # 总结只放已发布的：草稿还没定稿，点开会是空壳，学生写草稿从活动详情进入
+    summaries = db.scalars(
+        select(ActivitySummary).where(
+            ActivitySummary.is_deleted.is_(False),
+            ActivitySummary.status == SummaryStatus.PUBLISHED.value,
+        )
+    ).all()
+
+    joined_ids: set[str] = set()
+    my_signup_status: dict[str, str] = {}
+    my_signups: dict[str, dict] = {}
+    if current.user_id:
+        signups = db.scalars(
+            select(ActivitySignup).where(
+                ActivitySignup.user_id == current.user_id,
+                ActivitySignup.is_deleted.is_(False),
+                ActivitySignup.status == SignupStatus.APPROVED.value,
+            )
+        ).all()
+        joined_ids = {row.activity_id for row in signups}
+        my_signup_status = {row.activity_id: row.status for row in signups}
+        my_signups = {
+            row.activity_id: {
+                "status": row.status,
+                "checked_in_at": row.checked_in_at,
+                "checked_out_at": row.checked_out_at,
+                "certificate_no": row.certificate_no,
+            }
+            for row in signups
+        }
+
+    # 个性化：参加过同类活动的用户，对同分类的新推送略微加权（12 小时）；
+    # 已报名的活动再加重（24 小时），保证「我参加的活动」不会被大量新活动淹没。
+    interest_categories = {
+        activity_map[activity_id].category
+        for activity_id in joined_ids
+        if activity_id in activity_map and activity_map[activity_id].category
+    }
+
+    def _score(value: datetime | None, category: str = "", activity_id: str = "") -> float:
+        if value is None:
+            return 0.0
+        score = _as_utc(value).timestamp()
+        if category and category in interest_categories:
+            score += 12 * 3600
+        if activity_id and activity_id in joined_ids:
+            score += 24 * 3600
+        return score
+
+    items: list[dict] = []
+    for row in activities:
+        if scope == "joined" and row.activity_id not in joined_ids:
+            continue
+        if scope == "mine" and row.organizer_id != current.user_id:
+            continue
+        published_at = row.published_at or row.created_at
+        items.append(
+            {
+                "item_type": "activity",
+                "item_id": row.activity_id,
+                "activity_id": row.activity_id,
+                "title": row.title,
+                "excerpt": row.subtitle or row.summary or "",
+                "cover_url": row.cover_url,
+                "category": row.category,
+                "status": row.status,
+                "level": row.level,
+                "location": row.location,
+                "start_at": row.start_at,
+                "end_at": row.end_at,
+                "signup_start_at": row.signup_start_at,
+                "signup_end_at": row.signup_end_at,
+                "signup_count": row.signup_count,
+                "capacity": row.capacity,
+                "need_certificate": row.need_certificate,
+                "organizer_id": row.organizer_id,
+                "organizer_name": row.organizer_name,
+                "published_at": published_at,
+                "is_joined": row.activity_id in joined_ids,
+                "is_mine": row.organizer_id == current.user_id,
+                "my_signup_status": my_signup_status.get(row.activity_id, ""),
+                "my_signup": my_signups.get(row.activity_id),
+                "_score": _score(published_at, row.category, row.activity_id),
+            }
+        )
+
+    for row in summaries:
+        activity = activity_map.get(row.activity_id)
+        if activity is None:
+            continue
+        if scope == "joined" and row.activity_id not in joined_ids:
+            continue
+        if scope == "mine" and row.author_id != current.user_id:
+            continue
+        published_at = row.published_at or row.created_at
+        items.append(
+            {
+                "item_type": "summary",
+                "item_id": row.summary_id,
+                "summary_id": row.summary_id,
+                "activity_id": row.activity_id,
+                "activity_title": row.activity_title or activity.title,
+                "title": row.title,
+                "excerpt": row.content[:200],
+                "content": row.content,
+                "images": row.images or [],
+                "author_id": row.author_id,
+                "author_name": row.author_name,
+                "published_at": published_at,
+                "view_count": row.view_count,
+                "is_mine": row.author_id == current.user_id,
+                "_score": _score(published_at, activity.category, row.activity_id),
+            }
+        )
+
+    items.sort(key=lambda item: item["_score"], reverse=True)
+    total = len(items)
+    start = (pq.page - 1) * pq.page_size
+    page_items = items[start : start + pq.page_size]
+    for item in page_items:
+        item.pop("_score", None)
+    return ok(page_result(page_items, pq.page, pq.page_size, total))
+
+
 @router.get("/{activity_id}", summary="活动详情")
 def get_activity(activity_id: str, current: CurrentUser = Depends(get_optional_user), db: Session = Depends(get_db)):
     row = _get_or_404(db, activity_id)
     visible = row.status in {s.value for s in ACTIVITY_PUBLIC_STATUSES}
     if not visible and not (_can_manage(current, row) or current.can(Permission.ACTIVITY_REVIEW.value)):
         raise BizError(CODE_NOT_FOUND, "活动不存在")
-    return ok(_to_out(row, current))
+    data = _to_out(row, current)
+    data["my_signup"] = _my_signup(db, activity_id, current)
+    return ok(data)
+
+
+@router.post(
+    "/{activity_id}/checkin",
+    summary="活动签到（本人）",
+    dependencies=[Depends(require_permissions(Permission.ACTIVITY_SIGNUP))],
+)
+def checkin_activity(
+    activity_id: str,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    activity = db.get(Activity, activity_id)
+    if activity is None or activity.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "活动不存在")
+    if activity.status not in {
+        ActivityStatus.PUBLISHED.value,
+        ActivityStatus.SIGNUP_CLOSED.value,
+        ActivityStatus.ONGOING.value,
+        ActivityStatus.FINISHED.value,
+    }:
+        raise BizError(CODE_ILLEGAL_STATE, "活动尚未开放签到")
+
+    signup = db.scalar(
+        select(ActivitySignup).where(
+            ActivitySignup.activity_id == activity_id,
+            ActivitySignup.user_id == current.user_id,
+            ActivitySignup.is_deleted.is_(False),
+        )
+    )
+    if signup is None or signup.status != SignupStatus.APPROVED.value:
+        raise BizError(CODE_ILLEGAL_STATE, "请先报名该活动")
+
+    now = datetime.now(timezone.utc)
+    start_at = _as_utc(activity.start_at)
+    end_at = _as_utc(activity.end_at or activity.start_at)
+    if now < start_at - timedelta(minutes=30):
+        raise BizError(CODE_ILLEGAL_STATE, "签到尚未开始")
+    if now > end_at + timedelta(hours=6):
+        raise BizError(CODE_ILLEGAL_STATE, "签到已结束")
+    if signup.checked_in_at is not None:
+        raise BizError(CODE_ILLEGAL_STATE, "已签到")
+
+    signup.checked_in_at = now
+    activity.checkin_count = (activity.checkin_count or 0) + 1
+    db.commit()
+    db.refresh(signup)
+    return ok(
+        {"checked_in_at": signup.checked_in_at, "checked_out_at": signup.checked_out_at},
+        message="签到成功",
+    )
+
+
+@router.post(
+    "/{activity_id}/checkout",
+    summary="活动签退（签退后自动发放证书）",
+    dependencies=[Depends(require_permissions(Permission.ACTIVITY_SIGNUP))],
+)
+def checkout_activity(
+    activity_id: str,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    activity = db.get(Activity, activity_id)
+    if activity is None or activity.is_deleted:
+        raise BizError(CODE_NOT_FOUND, "活动不存在")
+
+    signup = db.scalar(
+        select(ActivitySignup).where(
+            ActivitySignup.activity_id == activity_id,
+            ActivitySignup.user_id == current.user_id,
+            ActivitySignup.is_deleted.is_(False),
+        )
+    )
+    if signup is None or signup.status != SignupStatus.APPROVED.value:
+        raise BizError(CODE_ILLEGAL_STATE, "未报名该活动")
+    if signup.checked_in_at is None:
+        raise BizError(CODE_ILLEGAL_STATE, "请先签到")
+
+    now = datetime.now(timezone.utc)
+    end_at = _as_utc(activity.end_at or activity.start_at)
+    if now > end_at + timedelta(hours=6):
+        raise BizError(CODE_ILLEGAL_STATE, "签退已结束")
+    if signup.checked_out_at is None:
+        signup.checked_out_at = now
+
+    cert = certificate_issue.issue_for_signup(db, activity, signup, issued_by_name="系统自动发放")
+    db.commit()
+    if cert is not None:
+        db.refresh(cert)
+    db.refresh(signup)
+
+    certificate = None
+    if cert is not None:
+        certificate = {
+            "certificate_id": cert.certificate_id,
+            "serial_no": cert.serial_no,
+            "verify_code": cert.verify_code,
+            "activity_title": cert.activity_title,
+            "issued_at": cert.issued_at,
+        }
+    return ok(
+        {
+            "checked_out_at": signup.checked_out_at,
+            "certificate_no": signup.certificate_no,
+            "certificate": certificate,
+        },
+        message="签退成功" + ("，证书已发放" if certificate else ""),
+    )
 
 
 @router.post("/{activity_id}/signups", status_code=201, summary="报名（访客不可报名）", dependencies=[Depends(require_permissions(Permission.ACTIVITY_SIGNUP))])

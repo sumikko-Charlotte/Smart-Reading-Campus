@@ -27,8 +27,7 @@ class Permission(str, Enum):
     # ---- 馆藏图书 ----
     BOOK_MANAGE = "book:manage"              # 馆藏图书建档与维护
     # ---- 电子证书 ----
-    CERTIFICATE_VIEW = "certificate:view"    # 查看并下载自己的证书
-    CERTIFICATE_ISSUE = "certificate:issue"  # 颁发证书、加盖公章、查看全部证书
+    CERTIFICATE_VIEW = "certificate:view"    # 查看并下载自己的证书（仅学生端）
     # ---- AI ----
     AI_RECOMMEND = "ai:recommend"            # 图书推荐（访客走降级 Mock）
     AI_CHAT = "ai:chat"                      # AI 伴读多轮对话
@@ -50,7 +49,6 @@ PERMISSION_CATALOG: list[dict] = [
     {"code": Permission.DRIFT_MANAGE.value, "name": "漂流运营管理", "group": "图书漂流", "description": "下架、修正漂流状态等运营操作", "risk": "medium"},
     {"code": Permission.BOOK_MANAGE.value, "name": "馆藏图书管理", "group": "图书漂流", "description": "馆藏图书建档、编辑与 AI 解读刷新", "risk": "medium"},
     {"code": Permission.CERTIFICATE_VIEW.value, "name": "查看/下载本人证书", "group": "电子证书", "description": "查看本人电子证书并下载 PDF", "risk": "low"},
-    {"code": Permission.CERTIFICATE_ISSUE.value, "name": "颁发证书", "group": "电子证书", "description": "批量颁发证书、加盖公章、查看全部证书", "risk": "high"},
     {"code": Permission.AI_RECOMMEND.value, "name": "AI 智能推荐", "group": "AI 能力", "description": "使用智能推荐（访客自动降级为 Mock）", "risk": "low"},
     {"code": Permission.AI_CHAT.value, "name": "AI 伴读对话", "group": "AI 能力", "description": "与 AI 阅读助手多轮对话", "risk": "low"},
     {"code": Permission.SYSTEM_USER.value, "name": "用户管理", "group": "系统", "description": "新增/编辑/禁用用户", "risk": "high"},
@@ -96,8 +94,6 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, set[str]] = {
         Permission.DRIFT_PARTICIPATE.value,
         Permission.DRIFT_MANAGE.value,
         Permission.BOOK_MANAGE.value,
-        Permission.CERTIFICATE_VIEW.value,
-        Permission.CERTIFICATE_ISSUE.value,
         Permission.AI_RECOMMEND.value,
         Permission.AI_CHAT.value,
         Permission.SYSTEM_USER.value,

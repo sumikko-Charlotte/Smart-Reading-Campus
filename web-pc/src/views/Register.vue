@@ -89,7 +89,7 @@ const loading = ref(false)
 
 const roleOptions = [
   { value: 'student', label: '学生', desc: '报名活动、图书漂流、电子证书、AI 伴读', icon: Reading },
-  { value: 'admin', label: '管理员', desc: '活动审批、图书漂流运营、证书颁发', icon: Setting }
+  { value: 'admin', label: '管理员', desc: '活动审批、图书漂流运营、活动总结', icon: Setting }
 ]
 
 const form = reactive({

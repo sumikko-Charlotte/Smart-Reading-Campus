@@ -41,6 +41,21 @@ SCENE_PERMISSIONS = {
     "companion": Permission.AI_CHAT,
 }
 
+# 两个场景产出的是「草稿」而非写库动作：录书只给待确认的书目记录，触达只给待发布的文案，
+# 因此学生也可以用。访客仍不开放，避免匿名账号消耗额度。
+SCENE_ROLES = {
+    "intake": {"student", "admin", "super_admin"},
+    "outreach": {"student", "admin", "super_admin"},
+}
+
+
+def scene_allowed(scene: str, current: CurrentUser) -> bool:
+    """场景可用性 = 角色白名单 或 持有对应权限（管理员/被额外授权者）。"""
+    if scene in SCENE_ROLES and current.role in SCENE_ROLES[scene]:
+        return True
+    required = SCENE_PERMISSIONS.get(scene)
+    return bool(required and current.can(required.value))
+
 
 def _require_scene(scene: str) -> str:
     if scene not in SCENE_PERMISSIONS:
@@ -154,7 +169,7 @@ def health():
 
 
 @router.get("/tools", summary="四个场景与各自可调用的工具")
-def list_tools():
+def list_tools(current: CurrentUser = Depends(get_current_user)):
     data = []
     for scene, (label, description) in SCENE_LABELS.items():
         data.append(
@@ -163,6 +178,7 @@ def list_tools():
                 "label": label,
                 "description": description,
                 "permission": SCENE_PERMISSIONS[scene].value,
+                "allowed": scene_allowed(scene, current),
                 "tools": tools.describe_for(scene),
             }
         )
@@ -171,11 +187,14 @@ def list_tools():
 
 def _run_scene(scene: str, payload: AgentRunRequest, current: CurrentUser, db: Session) -> dict:
     if scene == "intake":
-        return scenes.run_intake(db, current.user_id, payload.model_dump())
+        return scenes.run_intake(db, current.user_id, payload.model_dump(), current.role)
     if scene == "match":
         return scenes.run_match(db, current.user_id, current.role, payload.model_dump())
     if scene == "outreach":
-        return scenes.run_outreach(db, current.user_id, payload.model_dump())
+        can_manage_all = current.role in {"admin", "super_admin"} or current.can(
+            Permission.ACTIVITY_MANAGE_ALL.value
+        )
+        return scenes.run_outreach(db, current.user_id, payload.model_dump(), can_manage_all=can_manage_all)
 
     # companion：带上一轮对话再交给智能体
     history: list[dict] = []
@@ -194,9 +213,8 @@ def run_scene(
     db: Session = Depends(get_db),
 ):
     _require_scene(scene)
-    required = SCENE_PERMISSIONS[scene]
-    if not current.can(required):
-        raise BizError(1003, f"当前账号没有「{required.value}」权限", http_status=403)
+    if not scene_allowed(scene, current):
+        raise BizError(1003, "当前账号没有使用该智能体场景的权限", http_status=403)
 
     if scene == "match" and not (payload.query or payload.book_id):
         # 允许空 query：等于「按我的画像推荐」，这是最常见的用法

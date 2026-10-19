@@ -2,14 +2,14 @@
   <div class="page">
     <div class="page-header">
       <div>
-        <h2 class="page-title">我的电子证书</h2>
-        <p class="page-desc">参加完活动后由管理员统一颁发，可下载 PDF（含公章与验真码）。</p>
+        <h2 class="page-title">我的证书</h2>
+        <p class="page-desc">完成活动签到与签退后自动发放，可下载 PDF。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="fetchList">刷新</el-button>
     </div>
 
     <div v-loading="loading" class="cert-grid">
-      <el-empty v-if="!list.length && !loading" description="还没有证书，报名参加带「发证书」标记的活动吧" />
+      <el-empty v-if="!list.length && !loading" description="暂无证书，完成活动签到与签退后会自动发放" />
 
       <el-card v-for="cert in list" :key="cert.certificate_id" class="cert-card" shadow="hover">
         <div class="cert-head">

@@ -3,7 +3,6 @@
     <div class="page-header">
       <div>
         <h2 class="page-title">首页概览</h2>
-        <p class="page-desc">数据来自 <code>GET /api/v1/activities/stats</code> 与 <code>GET /api/v1/drift/stats</code>，第 1 轮为真实接口骨架数据。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新数据</el-button>
     </div>

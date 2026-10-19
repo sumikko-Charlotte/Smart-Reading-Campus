@@ -10,15 +10,6 @@
       <el-tag type="info" effect="plain">手动生成</el-tag>
     </div>
 
-    <el-alert
-      v-if="degraded"
-      class="degraded-tip"
-      type="warning"
-      :closable="true"
-      show-icon
-      title="当前为访客模式：推荐结果由本地 Mock 生成（不调用真实大模型），登录后可获得个性化推荐。"
-    />
-
     <div class="filter-bar">
       <el-form :inline="true" :model="form" @submit.prevent>
         <el-form-item label="阅读偏好">
@@ -34,7 +25,7 @@
     </div>
 
     <div v-loading="loading" class="recommend-wrap">
-      <el-empty v-if="!items.length && !loading" description="点击「生成推荐」拉取借阅榜单并生成推荐理由" />
+      <el-empty v-if="!items.length && !loading" description="点击「生成推荐」获取书目与推荐理由" />
 
       <el-row v-else :gutter="16">
         <el-col v-for="(item, index) in items" :key="item.book.book_id" :xs="24" :sm="12" :md="8">
@@ -97,7 +88,6 @@ import { PERM } from '@/constants'
 const store = useUserStore()
 const loading = ref(false)
 const items = ref([])
-const degraded = ref(false)
 const form = reactive({ extra_prompt: '', limit: 6 })
 
 const dialogVisible = ref(false)
@@ -112,8 +102,7 @@ async function onRecommend() {
   try {
     const data = await recommendBooks({ extra_prompt: form.extra_prompt, limit: form.limit })
     items.value = data.items
-    degraded.value = Boolean(data.degraded)
-    ElMessage.success(`已生成 ${data.items.length} 条推荐（${data.degraded ? '本地 Mock' : `模型：${data.model}`} / 提示词 ${data.prompt_version}）`)
+    ElMessage.success(`已生成 ${data.items.length} 条推荐`)
   } catch (error) {
     items.value = []
   } finally {
@@ -146,10 +135,6 @@ async function onAnalyze(book) {
 </script>
 
 <style scoped>
-.degraded-tip {
-  margin-bottom: 12px;
-}
-
 .recommend-wrap {
   min-height: 260px;
 }

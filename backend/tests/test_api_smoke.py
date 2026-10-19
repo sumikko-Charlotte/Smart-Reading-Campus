@@ -1,10 +1,17 @@
 """第二阶段冒烟测试：权限矩阵 + 审批流 + 电子证书 + 活动总结推送。
 
 运行： backend/.venv/Scripts/python.exe tests/test_api_smoke.py
-前提： 先跑过 scripts/seed.py（测试依赖演示账号与演示活动）
+隔离： 每次在 tests/.test_smoke.db 建一个全新库并灌 seed 数据，
+      不碰演示库（演示库随时会被人从界面改动，断言依赖它就会时好时坏）。
 """
 import os
 import sys
+from pathlib import Path
+
+_TEST_DB = Path(__file__).resolve().parent / ".test_smoke.db"
+if _TEST_DB.exists():
+    _TEST_DB.unlink()
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,6 +31,7 @@ from app.db.models import (  # noqa: E402
     User,
 )
 from app.main import app  # noqa: E402
+from scripts import seed as seed_script  # noqa: E402
 
 client = TestClient(app)
 PASSWORD = "123456"
@@ -118,7 +126,41 @@ def cleanup() -> None:
         db.close()
 
 
+def reset_demo_baseline() -> None:
+    """把演示账号恢复到 seed 基线。
+
+    现场演示时可能在界面上点过「通过」，Bob / 访客就会多出权限，
+    导致「Bob 不应有申办权」这类断言失败。测试前统一退回待审批状态，
+    保证脚本可以反复运行。
+    """
+    db = SessionLocal()
+    try:
+        for student_no in ("2025211996", "guest"):
+            row = db.scalar(select(User).where(User.student_no == student_no))
+            if row is None:
+                continue
+            row.granted_permissions = []
+            row.revoked_permissions = []
+            approved = db.scalars(
+                select(PermissionRequest).where(
+                    PermissionRequest.user_id == row.user_id,
+                    PermissionRequest.status == "approved",
+                )
+            ).all()
+            for item in approved:
+                item.status = "pending"
+                item.reviewer_id = ""
+                item.reviewer_name = ""
+                item.review_comment = ""
+                item.reviewed_at = None
+        db.commit()
+    finally:
+        db.close()
+
+
 def main() -> None:
+    seed_script.main()
+    reset_demo_baseline()
     print("=== 1. 健康检查与登录 ===")
     assert client.get("/api/v1/health").json()["code"] == 0
     accounts = {
@@ -265,15 +307,8 @@ def main() -> None:
     verify_body = expect(client.get(f"/api/v1/certificates/verify/{cert['verify_code']}"), 0, "公开验真")
     assert verify_body["data"]["valid"] is True and "*" in verify_body["data"]["holder_name"], verify_body
     expect(client.get(f"/api/v1/certificates/{cert['certificate_id']}/pdf", headers=auth(tokens["bob"])), 1003, "下载他人证书")
-    expect(client.post(f"/api/v1/activities/{cert['activity_id']}/certificates", json={}, headers=auth(tokens["alice"])), 1003, "学生颁发证书")
-    issued = expect(
-        client.post(f"/api/v1/activities/{cert['activity_id']}/certificates",
-                    json={"only_checked_in": True, "certificate_name": "荣誉证书"}, headers=auth(tokens["admin"])),
-        0,
-        "管理员批量颁发",
-    )
-    print(f"  批量颁发：新发 {issued['data']['issued']} 张，跳过 {issued['data']['skipped']} 张（已有证书）")
-    print("  ✅ 证书 PDF 可下载、公开验真、越权访问被拦、批量颁发幂等")
+    expect(client.get("/api/v1/certificates/mine", headers=auth(tokens["admin"])), 1003, "管理员无我的证书")
+    print("  ✅ 学生证书 PDF 可下载、公开验真、越权访问被拦")
 
     print("=== 6. 活动总结与推送 ===")
     # 自建一条活动并走完生命周期，保证测试可重复运行（不污染演示数据）

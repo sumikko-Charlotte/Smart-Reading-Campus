@@ -22,6 +22,7 @@ from app.core.config import settings
 
 # 各 provider 的默认地址，只在 LLM_API_BASE 留空时兜底
 PROVIDER_BASE_URLS = {
+    "aliyun": "https://ws-ga8vgq305mnttsd5.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",

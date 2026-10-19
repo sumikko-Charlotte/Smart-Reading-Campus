@@ -36,7 +36,7 @@ const routes = [
       {
         path: 'activities',
         name: 'activity-home',
-        component: () => import('@/views/activity/ActivityHome.vue'),
+        component: () => import('@/views/activity/ActivityFeed.vue'),
         meta: { title: '活动', icon: 'Calendar', menu: true, permission: PERM.ACTIVITY_VIEW }
       },
       {
@@ -70,22 +70,10 @@ const routes = [
         meta: { title: '活动总结', hidden: true, activeMenu: '/activities', permission: PERM.ACTIVITY_CREATE }
       },
       {
-        path: 'summaries',
-        name: 'summary-feed',
-        component: () => import('@/views/activity/SummaryFeed.vue'),
-        meta: { title: '活动回顾', icon: 'Notebook', menu: true, permission: PERM.ACTIVITY_VIEW }
-      },
-      {
         path: 'certificates',
         name: 'certificate-mine',
         component: () => import('@/views/certificate/CertificateMine.vue'),
-        meta: { title: '我的证书', icon: 'Medal', menu: true, permission: PERM.CERTIFICATE_VIEW }
-      },
-      {
-        path: 'certificates/manage',
-        name: 'certificate-manage',
-        component: () => import('@/views/certificate/CertificateManage.vue'),
-        meta: { title: '证书管理', icon: 'Files', menu: true, permission: PERM.CERTIFICATE_ISSUE }
+        meta: { title: '我的证书', icon: 'Medal', menu: true, permission: PERM.CERTIFICATE_VIEW, roles: ['student'] }
       },
       {
         path: 'notifications',
@@ -150,6 +138,11 @@ router.beforeEach(async (to) => {
   const needed = to.meta.permission
   if (needed && !store.can(needed)) {
     ElMessage.warning('当前账号没有该页面的访问权限')
+    return { name: 'dashboard' }
+  }
+  const onlyRoles = to.meta.roles
+  if (onlyRoles && !onlyRoles.includes(store.role)) {
+    ElMessage.warning('当前账号无法访问该页面')
     return { name: 'dashboard' }
   }
   return true

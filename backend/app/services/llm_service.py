@@ -1,8 +1,4 @@
-"""AI 能力服务层（本轮为 Mock 实现，接口契约即最终契约）。
-
-第 2 轮把 `_call_llm` 换成真实 DeepSeek / 通义千问 调用即可，
-上层路由与 Schema 不需要改动。
-"""
+"""AI 能力服务层：对话、书目解读、推荐理由、宣传文案统一走 OpenAI 兼容接口。"""
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -83,18 +79,18 @@ def _call_llm(
         return content.strip(), int(tokens or 0)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 402:
-            message = "DeepSeek 账户余额不足，请充值后重试"
+            message = "模型账户余额不足，请充值后重试"
         elif exc.response.status_code == 401:
-            message = "DeepSeek API key 无效，请检查后端配置"
+            message = "模型 API key 无效，请检查后端配置"
         elif exc.response.status_code == 429:
-            message = "DeepSeek 请求频率受限，请稍后重试"
+            message = "模型请求频率受限，请稍后重试"
         else:
-            message = f"DeepSeek 请求失败（HTTP {exc.response.status_code}）"
+            message = f"模型请求失败（HTTP {exc.response.status_code}）"
         raise LLMServiceError(message) from exc
     except LLMServiceError:
         raise
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-        raise LLMServiceError("DeepSeek 服务请求失败，请检查网络和模型配置") from exc
+        raise LLMServiceError("模型服务请求失败，请检查网络和模型配置") from exc
 
 
 def chat_reply(scene: str, question: str, book: Book | None) -> tuple[str, int]:
@@ -151,7 +147,7 @@ def recommend_reasons(books: list[Book], extra: str, limit: int) -> tuple[dict[s
         if any(not isinstance(reason, str) or not reason.strip() for reason in reason_list):
             raise ValueError("each reason must be a non-empty string")
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise LLMServiceError("DeepSeek 推荐结果格式无效") from exc
+        raise LLMServiceError("模型推荐结果格式无效") from exc
 
     reasons = {book.book_id: reason.strip() for book, reason in zip(books, reason_list)}
     return reasons, tokens

@@ -2,9 +2,6 @@
 import request from './request'
 
 export const listMyCertificates = (params) => request.get('/certificates/mine', { params })
-export const listCertificates = (params) => request.get('/certificates', { params })
-export const issueCertificates = (activityId, data) => request.post(`/activities/${activityId}/certificates`, data)
-export const revokeCertificate = (id) => request.post(`/certificates/${id}/revoke`)
 export const verifyCertificate = (code) => request.get(`/certificates/verify/${code}`)
 
 /** 下载 PDF：带 token 取 blob，避免直接开新窗口丢失 Authorization */

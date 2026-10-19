@@ -163,6 +163,8 @@ def change_password(
     row = db.get(User, current.user_id)
     if row is None:
         raise BizError(CODE_NOT_FOUND, "用户不存在")
+    if row.role == UserRole.VISITOR.value:
+        raise BizError(1003, "访客为公共只读账号，不支持设置密码", http_status=403)
     if not check_login_password(payload.old_password, row.password_hash):
         raise BizError(CODE_PARAM_ERROR, "原密码不正确")
     if payload.old_password == payload.new_password:
@@ -220,11 +222,17 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
 
 @router.patch("/users/{user_id}", summary="更新用户（本人或具有用户管理权限者）")
 def update_user(user_id: str, payload: UserUpdate, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 前端用 PATCH /users/me 保存本人资料，这里把 me 折叠成当前用户
+    if user_id == "me":
+        user_id = current.user_id
     row = db.get(User, user_id)
     if row is None or row.is_deleted:
         raise BizError(CODE_NOT_FOUND, "用户不存在")
     if current.user_id != user_id and not current.can(Permission.SYSTEM_USER.value):
         raise BizError(1003, "只能修改本人信息", http_status=403)
+    # 访客是所有人共用的一行数据，改资料会互相覆盖，直接拒绝
+    if current.user_id == user_id and row.role == UserRole.VISITOR.value:
+        raise BizError(1003, "访客为公共只读账号，资料不可修改", http_status=403)
     for key, value in payload.model_dump(exclude_unset=True).items():
         if value is None and key in {"name", "status"}:
             raise BizError(1001, f"{key} 不允许为 null")

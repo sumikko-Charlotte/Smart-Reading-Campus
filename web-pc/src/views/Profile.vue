@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h2 class="page-title">个人中心</h2>
-        <p class="page-desc">查看与修改个人资料、了解自己的权限来源，并按需向系统管理员申请权限。</p>
+        <p class="page-desc">个人资料、权限与安全设置。</p>
       </div>
       <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
     </div>
@@ -39,7 +39,15 @@
       <!-- 1. 个人资料 -->
       <el-tab-pane label="个人资料" name="info">
         <div class="card-block">
-          <el-form ref="infoRef" :model="info" label-width="90px" class="info-form">
+          <el-alert
+            v-if="isVisitor"
+            class="mb-12"
+            type="info"
+            :closable="false"
+            show-icon
+            title="访客是公共只读账号，资料不可修改；如需报名、申办或使用更多功能，请在「我的权限」中提交申请。"
+          />
+          <el-form ref="infoRef" :model="info" label-width="90px" class="info-form" :disabled="isVisitor">
             <div class="form-grid">
               <el-form-item label="姓名" prop="name" :rules="[{ required: true, message: '请输入姓名', trigger: 'blur' }]">
                 <el-input v-model="info.name" placeholder="真实姓名" />
@@ -72,7 +80,7 @@
                 <el-input v-model="info.email" placeholder="name@example.edu.cn" />
               </el-form-item>
             </div>
-            <el-form-item>
+            <el-form-item v-if="!isVisitor">
               <el-button type="primary" :loading="savingInfo" @click="onSaveInfo">保存资料</el-button>
             </el-form-item>
           </el-form>
@@ -192,12 +200,12 @@
         </div>
       </el-tab-pane>
 
-      <!-- 4. 账号安全 -->
-      <el-tab-pane label="账号安全" name="security">
+      <!-- 4. 账号安全（访客账号无密码，不展示） -->
+      <el-tab-pane v-if="!isVisitor" label="账号安全" name="security">
         <div class="card-block security-block">
           <el-form ref="pwdRef" :model="pwd" label-width="100px" class="pwd-form">
             <el-form-item label="原密码" prop="old_password" :rules="[{ required: true, message: '请输入原密码', trigger: 'blur' }]">
-              <el-input v-model="pwd.old_password" type="password" show-password placeholder="演示账号为 123456" />
+              <el-input v-model="pwd.old_password" type="password" show-password placeholder="请输入原密码" />
             </el-form-item>
             <el-form-item label="新密码" prop="new_password" :rules="[{ required: true, min: 6, message: '新密码至少 6 位', trigger: 'blur' }]">
               <el-input v-model="pwd.new_password" type="password" show-password placeholder="至少 6 位" />
@@ -213,7 +221,7 @@
             type="warning"
             :closable="false"
             show-icon
-            title="修改后，该账号只能用新密码登录；演示账号原有的 123456 不再生效。"
+            title="修改后，该账号只能用新密码登录。"
           />
         </div>
       </el-tab-pane>
@@ -314,8 +322,9 @@ const requestStatus = ref('pending')
 
 const profile = computed(() => store.profile || {})
 const isStaff = computed(() => ['admin', 'super_admin'].includes(profile.value.role))
-/** 访客只读，不开放权限申请 */
-const canRequest = computed(() => profile.value.role !== 'visitor')
+const isVisitor = computed(() => profile.value.role === 'visitor')
+/** 除系统管理员外都能提交申请（访客也开放，审批后即刻获得对应能力） */
+const canRequest = computed(() => profile.value.role !== 'super_admin')
 const ownership = computed(() => new Set(summary.value.permissions || []))
 
 const info = reactive({ name: '', college: '', major: '', grade: '', class_no: '', phone: '', email: '' })
@@ -397,6 +406,8 @@ async function loadAll() {
   mine.value = list.list
   pendingCount.value = pending.total
   fillInfo()
+  // 访客没有密码，深链到「账号安全」时落到「我的权限」
+  if (isVisitor.value && activeTab.value === 'security') activeTab.value = 'permissions'
 }
 
 async function refreshPending() {

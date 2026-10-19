@@ -3,13 +3,9 @@
     <div class="page-header">
       <div>
         <h2 class="page-title">AI 阅读助手</h2>
-        <p class="page-desc">
-          多轮伴读问答，双端共用同一份会话数据（AIConversation + messages）。流式开关可对比
-          <code>POST /api/v1/ai/chat</code> 的两种返回形态。
-        </p>
       </div>
       <div class="header-actions">
-        <el-switch v-model="useStream" active-text="流式输出" />
+        <el-switch v-model="useStream" active-text="逐字输出" />
         <el-button :icon="Refresh" @click="newConversation">新建会话</el-button>
       </div>
     </div>
@@ -78,23 +74,6 @@
               {{ labelOf(CONVERSATION_SCENE, c.scene) }} · {{ c.message_count }} 条 · {{ formatDateTime(c.updated_at) }}
             </div>
           </div>
-        </div>
-
-        <div class="card-block mt-16">
-          <h3 class="section-title">接口说明</h3>
-          <ul class="api-list">
-            <li><code>POST /ai/chat</code> 多轮对话（stream 可选）</li>
-            <li><code>GET /ai/conversations</code> 会话列表</li>
-            <li><code>GET /ai/conversations/:id</code> 消息流</li>
-            <li><code>DELETE /ai/conversations/:id</code> 删除会话</li>
-          </ul>
-          <el-alert
-            type="info"
-            :closable="false"
-            show-icon
-            title="与小程序的差异"
-            description="小程序端使用同一套接口与字段，仅渲染方式不同（Markdown → 富文本）。"
-          />
         </div>
       </el-col>
     </el-row>

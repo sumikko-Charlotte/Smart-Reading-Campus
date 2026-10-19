@@ -4,8 +4,7 @@
       <div>
         <h2 class="page-title">图书漂流</h2>
         <p class="page-desc">
-          线上线下联动的闲置图书流转：扫码上架 → 待领取 → 申领交接 → 流转追踪。
-          小程序端负责扫码，PC 端负责管理与看板。
+          扫码上架 → 待领取 → 申领交接 → 流转追踪。
         </p>
       </div>
       <div>
@@ -114,8 +113,8 @@
         type="info"
         :closable="false"
         show-icon
-        title="小程序端扫码后同样调用 POST /api/v1/drift/books"
-        description="PC 端此处为手工补录入口：填入 ISBN 与交接地点即可上架。"
+        title="手工补录上架"
+        description="填入 ISBN 与交接地点即可上架。"
         class="mb-12"
       />
       <el-form ref="shelfFormRef" :model="shelfForm" :rules="shelfRules" label-width="90px">
