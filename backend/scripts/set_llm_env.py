@@ -1,7 +1,7 @@
 """切换 backend/.env 的模型配置（保留其余内容，不传 --key 时保留现有 Key）。
 
 用法：
-  python scripts/set_llm_env.py --key sk-xxxx --model qwen-plus
+  python scripts/set_llm_env.py
   python scripts/set_llm_env.py --base https://...   # 只改端点
   python scripts/set_llm_env.py --show               # 只看当前配置（Key 打码）
 """
@@ -14,9 +14,9 @@ ENV = Path(__file__).resolve().parents[1] / ".env"
 
 DEFAULTS = {
     "LLM_ENABLED": "true",
-    "LLM_PROVIDER": "aliyun",
-    "LLM_MODEL": "qwen-plus",
-    "LLM_API_BASE": "https://ws-ga8vgq305mnttsd5.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "LLM_PROVIDER": "deepseek",
+    "LLM_MODEL": "deepseek-chat",
+    "LLM_API_BASE": "https://api.deepseek.com/v1",
 }
 
 
@@ -57,7 +57,7 @@ def write_env(changes: dict[str, str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="切换模型配置")
     parser.add_argument("--key", help="API Key；不传则保留现有值")
-    parser.add_argument("--model", help="模型名，默认 qwen-plus")
+    parser.add_argument("--model", help="模型名，默认 deepseek-chat")
     parser.add_argument("--base", help="OpenAI 兼容端点")
     parser.add_argument("--show", action="store_true", help="仅打印当前配置")
     args = parser.parse_args()

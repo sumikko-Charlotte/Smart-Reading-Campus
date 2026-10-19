@@ -163,6 +163,11 @@
 
 ### 后端
 
+模型配置：在 `backend/.env` 中设置 `LLM_API_KEY` 为 DeepSeek 控制台创建的 API Key。
+默认配置已使用 `deepseek`、`deepseek-chat` 和 `https://api.deepseek.com/v1`；
+普通 AI 接口和智能体共用同一套模型配置。保存后重启后端，并运行
+`.venv/Scripts/python.exe scripts/check_llm.py` 验证连通性。
+
 ```bash
 cd backend
 python -m venv .venv
@@ -252,7 +257,7 @@ draft → pending_review → published → signup_closed → ongoing → finishe
 
 | 项目 | 说明 |
 |---|---|
-| 大模型真实调用 | 智能体层已完成，当前 key 失效（HTTP 401）走降级。换有效 key 并设 `LLM_ENABLED=true` 即启用；也可切本地 Ollama 断网演示 |
+| 大模型真实调用 | 普通 AI 接口与智能体共用 DeepSeek OpenAI 兼容配置；在 `backend/.env` 配置有效的 `LLM_API_KEY` 并设 `LLM_ENABLED=true` 后启用 |
 | RAG 向量知识库 | 后续建设书目向量化与检索增强 |
 | 扫码签到 | `ActivitySignup.checked_in_at` 字段已就位；签到凭证规则规范标注为非本轮必做 |
 | 取消报名接口 | 规范 7.2.6 标注非本轮必做；数据层已支持 `cancelled` 记录窗口内重新激活 |

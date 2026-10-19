@@ -57,10 +57,9 @@ def main() -> int:
     print(f"  ❌ HTTP {resp.status_code}")
     print(f"     {resp.text[:300]}")
     if resp.status_code == 401:
-        print("     401 说明 Key 本身不被接受：请在百炼控制台「API-KEY 管理」重新复制完整 Key，")
-        print("     确认它属于当前账号且未被停用；Key 只在创建时完整显示，复制旧值可能已失效。")
+        print("     401 说明 Key 无效或已过期：请在 DeepSeek 开放平台创建/复制有效 API Key。")
     elif resp.status_code == 403:
-        print("     403 多为模型未开通或无调用额度，请在控制台开通该模型。")
+        print("     403 通常表示当前 API Key 没有权限调用该模型。")
     elif resp.status_code == 404:
         print("     404 多为模型名或端点路径不对，检查 LLM_MODEL / LLM_API_BASE。")
     return 1
