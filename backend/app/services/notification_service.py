@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.enums import UserRole, UserStatus
+from app.core.enums import SignupStatus, UserRole, UserStatus
 from app.core.permissions import effective_permissions
 from app.core.security import new_id
 from app.db.models import ActivitySignup, Notification, NotificationRead, User
@@ -102,11 +102,12 @@ def notify_permission_holders(
 
 
 def activity_signup_user_ids(db: Session, activity_id: str) -> list[str]:
-    """活动的报名者（未取消、未删除），去重后返回。"""
+    """活动的有效报名者（待审核或已批准），去重后返回。"""
     rows = db.scalars(
         select(ActivitySignup).where(
             ActivitySignup.activity_id == activity_id,
             ActivitySignup.is_deleted.is_(False),
+            ActivitySignup.status.in_((SignupStatus.PENDING.value, SignupStatus.APPROVED.value)),
         )
     ).all()
     return list(dict.fromkeys(row.user_id for row in rows if row.user_id))

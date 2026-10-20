@@ -6,6 +6,7 @@
 """
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 _TEST_DB = Path(__file__).resolve().parent / ".test_smoke.db"
@@ -23,7 +24,9 @@ from app.db.models import (  # noqa: E402
     Activity,
     ActivitySignup,
     ActivitySummary,
+    Book,
     Certificate,
+    DriftRecord,
     Notification,
     NotificationRead,
     PermissionLog,
@@ -67,6 +70,8 @@ def cleanup() -> None:
         act_ids = [row.activity_id for row in acts]
         test_users = db.scalars(select(User).where(User.student_no.like("SMOKE%"))).all()
         user_ids = [row.user_id for row in test_users]
+        test_books = db.scalars(select(Book).where(Book.title.like(f"{PREFIX}%"))).all()
+        test_book_ids = [row.book_id for row in test_books]
         # 申请单对应的待审批消息发给了系统管理员（user_id 不是测试账号），
         # 必须按 ref_id 清，否则每跑一次就给管理员留一条孤儿待办
         request_ids = (
@@ -110,6 +115,9 @@ def cleanup() -> None:
             db.execute(delete(Certificate).where(Certificate.activity_id.in_(act_ids)))
             # 物理删除：以前只标 is_deleted，跑一轮攒一批，演示库会越来越脏
             db.execute(delete(Activity).where(Activity.activity_id.in_(act_ids)))
+        if test_book_ids:
+            db.execute(delete(DriftRecord).where(DriftRecord.book_id.in_(test_book_ids)))
+            db.execute(delete(Book).where(Book.book_id.in_(test_book_ids)))
 
         db.execute(delete(PermissionLog).where(PermissionLog.remark.like(f"{PREFIX}%")))
 
@@ -161,6 +169,21 @@ def reset_demo_baseline() -> None:
 def main() -> None:
     seed_script.main()
     reset_demo_baseline()
+    db = SessionLocal()
+    try:
+        signup_default = ActivitySignup(
+            signup_id="sgn_default_check",
+            activity_id="act_default_check",
+            user_id="usr_default_check",
+            signed_up_at=datetime.now(timezone.utc),
+        )
+        db.add(signup_default)
+        db.flush()
+        assert signup_default.status == "approved", signup_default.status
+    finally:
+        db.rollback()
+        db.close()
+
     print("=== 1. 健康检查与登录 ===")
     assert client.get("/api/v1/health").json()["code"] == 0
     accounts = {
@@ -193,6 +216,29 @@ def main() -> None:
     assert rec_body["data"]["degraded"] is True and rec_body["data"]["model"] == "mock", rec_body
     print("  ✅ 访客可浏览/看漂流/用 Mock 推荐，不能报名、不能上架")
 
+    print("=== 2.1 漂流记录字段与重复申领保护 ===")
+    shelf = expect(
+        client.post(
+            "/api/v1/drift/books",
+            json={"title": f"{PREFIX}重复申领验证", "author": "测试"},
+            headers=auth(tokens["admin"]),
+        ),
+        0,
+        "创建漂流记录",
+    )["data"]
+    claim = expect(
+        client.post(f"/api/v1/drift/records/{shelf['drift_id']}/claim", headers=auth(tokens["alice"])),
+        0,
+        "申领漂流书",
+    )["data"]
+    assert claim["drift_status"] == "claimed" and claim["drift_count"] == 1, claim
+    expect(
+        client.post(f"/api/v1/drift/records/{shelf['drift_id']}/claim", headers=auth(tokens["alice"])),
+        1005,
+        "重复申领",
+    )
+    print("  ✅ 重复漂流申领被拒，状态与流转次数保持一致")
+
     print("=== 3. 学生申办 → 提交 → 管理员审批定级 ===")
     expect(
         client.post("/api/v1/activities", json={"title": f"{PREFIX}bob 越权申办", "start_at": "2026-12-01T14:00:00+08:00"},
@@ -207,7 +253,7 @@ def main() -> None:
             "category": "exhibition",
             "start_at": "2026-12-05T14:00:00+08:00",
             "end_at": "2026-12-05T17:00:00+08:00",
-            "signup_start_at": "2026-11-01T00:00:00+08:00",
+            "signup_start_at": "2026-10-01T00:00:00+08:00",
             "signup_end_at": "2026-12-01T00:00:00+08:00",
             "need_certificate": True,
         },
@@ -239,6 +285,46 @@ def main() -> None:
         "审批通过",
     )
     assert reviewed["data"]["status"] == "published" and reviewed["data"]["level"] == "school", reviewed
+    signup = expect(
+        client.post(
+            f"/api/v1/activities/{act['activity_id']}/signups",
+            json={},
+            headers=auth(tokens["alice"]),
+        ),
+        0,
+        "学生报名",
+    )["data"]
+    assert signup["status"] == "approved" and signup["checked_in_at"] is None, signup
+    expect(
+        client.post(
+            f"/api/v1/activities/{act['activity_id']}/signups",
+            json={},
+            headers=auth(tokens["alice"]),
+        ),
+        1005,
+        "重复报名",
+    )
+    updated = expect(
+        client.patch(
+            f"/api/v1/activities/{act['activity_id']}",
+            json={"signup_end_at": "2026-12-02T00:00:00+08:00", "location": "新活动地点"},
+            headers=auth(tokens["admin"]),
+        ),
+        0,
+        "更新报名时间和地点",
+    )
+    assert updated["data"]["signup_end_at"].startswith("2026-12-02") and updated["data"]["location"] == "新活动地点"
+    student_notifications = expect(
+        client.get("/api/v1/notifications", headers=auth(tokens["alice"])),
+        0,
+        "查询报名者通知",
+    )["data"]["list"]
+    assert any(
+        item["ref_id"] == act["activity_id"]
+        and "报名截止时间" in item["content"]
+        and "活动地点" in item["content"]
+        for item in student_notifications
+    ), student_notifications
     print("  ✅ 未授权学生被拦、无审批权管理员被拦、审批通过自动定级并发布")
 
     # 审批人不能审批自己的活动

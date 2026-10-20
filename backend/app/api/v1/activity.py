@@ -233,9 +233,24 @@ def update_activity(
         raise BizError(CODE_ILLEGAL_STATE, "审批中的活动不可编辑，请先撤回或等待审批结果")
     if "capacity" in payload.model_fields_set and payload.capacity is not None and payload.capacity != 0 and payload.capacity < row.signup_count:
         raise BizError(CODE_ILLEGAL_STATE, "名额上限不能低于已报名人数")
+    change_labels = {
+        "signup_start_at": "报名开始时间",
+        "signup_end_at": "报名截止时间",
+        "start_at": "活动开始时间",
+        "location": "活动地点",
+    }
+    changed_fields: list[str] = []
     for key, value in payload.model_dump(exclude_unset=True).items():
         if key in {"title", "category", "start_at", "capacity"} and value is None:
             raise BizError(CODE_PARAM_ERROR, f"{key} 不允许为 null")
+        if key in change_labels:
+            old_value = getattr(row, key)
+            if isinstance(old_value, datetime) and isinstance(value, datetime):
+                changed = _as_utc(old_value) != _as_utc(value)
+            else:
+                changed = old_value != value
+            if changed:
+                changed_fields.append(key)
         setattr(row, key, "" if value is None and key in {"subtitle", "cover_url", "summary", "content", "location", "certificate_template_id"} else value)
     if row.end_at is not None and _as_utc(row.end_at) <= _as_utc(row.start_at):
         raise BizError(CODE_PARAM_ERROR, "end_at 必须晚于 start_at")
@@ -244,6 +259,30 @@ def update_activity(
         raise BizError(CODE_PARAM_ERROR, "signup_start_at 必须早于实际报名截止时间")
     if row.signup_end_at is not None and _as_utc(row.signup_end_at) > _as_utc(row.start_at):
         raise BizError(CODE_PARAM_ERROR, "signup_end_at 不得晚于 start_at")
+    if changed_fields:
+        details = []
+        for key in changed_fields:
+            value = getattr(row, key)
+            if key == "signup_start_at" and value is None:
+                rendered = "发布后开放"
+            elif key == "signup_end_at" and value is None:
+                rendered = f"活动开始时（{_as_utc(row.start_at).isoformat()}）截止"
+            elif isinstance(value, datetime):
+                rendered = _as_utc(value).isoformat()
+            else:
+                rendered = value or "未设置"
+            details.append(f"{change_labels[key]}：{rendered}")
+        svc.notify_activity_signups(
+            db,
+            row.activity_id,
+            type=NotificationType.ACTIVITY_STATUS.value,
+            title=f"你报名的活动信息已更新：{row.title}",
+            content="以下信息已调整：" + "；".join(details) + "。请以活动详情页为准。",
+            ref_type="activity",
+            ref_id=row.activity_id,
+            actor_id=current.user_id,
+            actor_name=current.name,
+        )
     db.commit()
     db.refresh(row)
     return ok(_to_out(row, current))

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import Field, model_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import page_query
@@ -124,9 +124,26 @@ def claim(drift_id: str, current: CurrentUser = Depends(get_current_user), db: S
         raise BizError(CODE_ILLEGAL_STATE, "不能申领自己上架的图书")
 
     holder = db.get(User, current.user_id)
-    record.current_holder_id = current.user_id
-    record.drift_status = DriftStatus.CLAIMED.value
-    record.drift_count += 1
+    claimed = db.execute(
+        update(DriftRecord)
+        .where(
+            DriftRecord.drift_id == drift_id,
+            DriftRecord.is_deleted.is_(False),
+            DriftRecord.drift_status.in_((DriftStatus.IDLE.value, DriftStatus.RESERVED.value)),
+            or_(
+                DriftRecord.current_holder_id.is_(None),
+                DriftRecord.current_holder_id != current.user_id,
+            ),
+        )
+        .values(
+            current_holder_id=current.user_id,
+            drift_status=DriftStatus.CLAIMED.value,
+            drift_count=DriftRecord.drift_count + 1,
+        )
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise BizError(CODE_ILLEGAL_STATE, "该漂流书状态已变化，请刷新后重试")
     db.commit()
     db.refresh(record)
     return ok(
